@@ -1,5 +1,4 @@
 import base64
-import pickle
 
 import ray
 import requests
@@ -34,6 +33,8 @@ def submit_job(
 def execute_on_ray(
     job_id: str, function_code: bytes, node_ids: list, compute: str, gpus: int | None = None
 ):
+    import pickle
+
     func = pickle.loads(function_code)
     num_gpus = gpus or 1 if compute == "gpu" else 0
     if num_gpus > 1:

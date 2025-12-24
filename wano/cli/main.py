@@ -82,6 +82,9 @@ def join(control_plane_url: str):
     click.echo("Starting node agent...")
     try:
         agent.start()
+    except (RuntimeError, requests.exceptions.ConnectionError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     except KeyboardInterrupt:
         click.echo("\nStopping node agent...")
         agent.stop()
@@ -97,7 +100,6 @@ def run(script: str, compute: str, gpus: int, control_plane_url: str):
     if not script_path.exists():
         click.echo(f"Error: Script {script} not found", err=True)
         sys.exit(1)
-    exec(script_path.read_text(), globals())
     click.echo("Submitting job...\nNote: Function discovery not fully implemented in MVP")
     import base64
 
@@ -151,14 +153,14 @@ def status(control_plane_url: str):
                 )
         else:
             click.echo("  No jobs")
-    except requests.exceptions.ConnectionError:
-        click.echo(
-            f"Error: Could not connect to control plane\n  Is the control plane running at {control_plane_url}?\n  Start it with: wano up",
-            err=True,
-        )
-        sys.exit(1)
     except requests.exceptions.RequestException as e:
-        click.echo(f"Error: {e}", err=True)
+        if isinstance(e, requests.exceptions.ConnectionError):
+            click.echo(
+                f"Error: Could not connect to control plane\n  Is the control plane running at {control_plane_url}?\n  Start it with: wano up",
+                err=True,
+            )
+        else:
+            click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
 
@@ -168,14 +170,14 @@ def status(control_plane_url: str):
 def logs(job_id: str, control_plane_url: str):
     try:
         stream_logs(job_id, control_plane_url)
-    except requests.exceptions.ConnectionError:
-        click.echo(
-            f"Error: Could not connect to control plane\n  Is the control plane running at {control_plane_url}?\n  Start it with: wano up",
-            err=True,
-        )
-        sys.exit(1)
     except requests.exceptions.RequestException as e:
-        click.echo(f"Error: {e}", err=True)
+        if isinstance(e, requests.exceptions.ConnectionError):
+            click.echo(
+                f"Error: Could not connect to control plane\n  Is the control plane running at {control_plane_url}?\n  Start it with: wano up",
+                err=True,
+            )
+        else:
+            click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
 

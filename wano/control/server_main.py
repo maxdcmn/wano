@@ -20,7 +20,7 @@ def main():
     try:
         port, ray_port, db_path = int(sys.argv[1]), int(sys.argv[2]), Path(sys.argv[3])
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        init_control_plane(db_path, ray_port)
+        init_control_plane(db_path, ray_port, port)
         run_server(port=port)
     except Exception as e:
         print(f"Error starting server: {e}", file=sys.stderr)

@@ -4,12 +4,9 @@ from wano.models.job import Job
 class Scheduler:
     def schedule_job(self, job: Job, available_compute: dict[str, list[dict]]) -> list[str] | None:
         if job.compute == "cpu":
-            return (
-                [self._get_nodes_with_compute(available_compute, "cpu")[0]]
-                if "cpu" in available_compute
-                and self._get_nodes_with_compute(available_compute, "cpu")
-                else None
-            )
+            if "cpu" in available_compute and available_compute["cpu"]:
+                return [available_compute["cpu"][0].get("node_id", "unknown")]
+            return None
         elif job.compute == "gpu":
             return self._schedule_gpu_job(job, available_compute)
         return None
@@ -20,39 +17,22 @@ class Scheduler:
         if "gpu" not in available_compute:
             return None
         gpus_needed = job.gpus or 1
-        node_gpus = self._get_node_gpu_map(available_compute)
+        node_gpus: dict[str, list[dict]] = {}
+        for gpu_entry in available_compute["gpu"]:
+            if isinstance(gpu_entry, list):
+                node_id = gpu_entry[0].get("node_id") if gpu_entry else None
+                if node_id:
+                    node_gpus.setdefault(node_id, []).extend(gpu_entry)
+            else:
+                node_id = gpu_entry.get("node_id")
+                if node_id:
+                    node_gpus.setdefault(node_id, []).append(gpu_entry)
         selected_nodes = []
         gpus_assigned = 0
-        for _gpu_model, nodes_with_model in self._group_by_gpu_model(node_gpus).items():
+        for node_id, gpu_list in node_gpus.items():
             if gpus_assigned >= gpus_needed:
                 break
-            for node_id, gpu_count in nodes_with_model:
-                if gpus_assigned >= gpus_needed:
-                    break
-                if node_id not in selected_nodes:
-                    selected_nodes.append(node_id)
-                gpus_assigned += min(gpu_count, gpus_needed - gpus_assigned)
-        if gpus_assigned < gpus_needed:
-            for node_id, gpu_list in node_gpus.items():
-                if gpus_assigned >= gpus_needed:
-                    break
-                if node_id not in selected_nodes:
-                    selected_nodes.append(node_id)
-                    gpus_assigned += len(gpu_list)
+            if node_id not in selected_nodes:
+                selected_nodes.append(node_id)
+            gpus_assigned += len(gpu_list)
         return selected_nodes if gpus_assigned >= gpus_needed else None
-
-    def _get_nodes_with_compute(
-        self, available_compute: dict[str, list[dict]], compute_type: str
-    ) -> list[str]:
-        return []
-
-    def _get_node_gpu_map(self, available_compute: dict[str, list[dict]]) -> dict[str, list[dict]]:
-        return {}
-
-    def _group_by_gpu_model(self, node_gpus: dict[str, list[dict]]) -> dict[str, list[tuple]]:
-        model_to_nodes: dict[str, list[tuple]] = {}
-        for node_id, gpu_list in node_gpus.items():
-            for gpu in gpu_list:
-                model = gpu.get("name", "unknown")
-                model_to_nodes.setdefault(model, []).append((node_id, 1))
-        return model_to_nodes

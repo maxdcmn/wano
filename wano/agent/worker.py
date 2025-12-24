@@ -21,7 +21,7 @@ class NodeAgent:
         if not self.control_plane_url:
             self.control_plane_url = discover_control_plane()
             if not self.control_plane_url:
-                raise RuntimeError("Could not discover control plane")
+                raise RuntimeError("Control plane not found. Start it with 'wano up'")
         self.register_node()
         self.start_ray_worker()
         self.running = True
@@ -30,26 +30,24 @@ class NodeAgent:
     def register_node(self):
         if not self.capabilities:
             raise RuntimeError("Capabilities not detected")
-        requests.post(
-            f"{self.control_plane_url}/register", json=self.capabilities.to_dict()
-        ).raise_for_status()
+        try:
+            requests.post(
+                f"{self.control_plane_url}/register", json=self.capabilities.to_dict(), timeout=5
+            ).raise_for_status()
+        except requests.exceptions.ConnectionError as e:
+            raise RuntimeError("Control plane not running. Start it with 'wano up'") from e
 
     def start_ray_worker(self):
         os.environ["RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO"] = "0"
-        from urllib.parse import urlparse
-
-        hostname_raw = urlparse(self.control_plane_url).hostname
-        hostname: str | None = None
-        if hostname_raw:
-            if isinstance(hostname_raw, bytes):
-                hostname = hostname_raw.decode("utf-8")
-            else:
-                hostname = hostname_raw
-        ray_address = (
-            "127.0.0.1:10001"
-            if (not hostname or hostname in ("localhost", "127.0.0.1", "0.0.0.0"))
-            else f"{hostname}:10001"
-        )
+        try:
+            response = requests.get(f"{self.control_plane_url}/ray-address", timeout=5)
+            response.raise_for_status()
+            ray_address = response.json()["ray_address"]
+        except Exception as e:
+            print(
+                f"Warning: Could not get Ray address from control plane: {e}\nRay worker will not be available, but node registration succeeded"
+            )
+            return
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=FutureWarning, message=".*RAY_ACCEL.*")

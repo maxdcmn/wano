@@ -1,4 +1,3 @@
-import contextlib
 import socket
 import uuid
 from pathlib import Path
@@ -9,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from zeroconf import ServiceInfo, Zeroconf
 
 from wano.control.db import Database
-from wano.control.ray_manager import RayManager
+from wano.control.ray_manager import RayManager, get_local_ip
 from wano.control.scheduler import Scheduler
 from wano.models.compute import NodeCapabilities
 
@@ -21,61 +20,50 @@ zeroconf_instance: Zeroconf | None = None
 join_token: str = "wano-default-token"
 
 
-def init_control_plane(db_path: Path, ray_port: int = 10001):
+def init_control_plane(db_path: Path, ray_port: int = 10001, api_port: int = 8000):
     global db, ray_manager, scheduler
     db = Database(db_path)
     ray_manager = RayManager()
     ray_manager.start(ray_port)
     scheduler = Scheduler()
-    start_mdns_advertising()
+    start_mdns_advertising(api_port)
 
 
-def start_mdns_advertising():
+def start_mdns_advertising(port: int = 8000):
     global zeroconf_instance
-    local_ip = None
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        with contextlib.suppress(Exception):
-            local_ip = socket.gethostbyname(socket.gethostname())
-    if not local_ip:
-        local_ip = "127.0.0.1"
+    local_ip = get_local_ip()
     info = ServiceInfo(
         "_wano._tcp.local.",
         "wano-control-plane._wano._tcp.local.",
         addresses=[socket.inet_aton(local_ip)],
-        port=8000,
+        port=port,
         properties={"token": join_token.encode()},
     )
     zeroconf_instance = Zeroconf()
     zeroconf_instance.register_service(info)
 
 
-def _check_db():
+def _check_db() -> Database:
     if not db:
         raise HTTPException(status_code=500, detail="Database not initialized")
+    return db
 
 
 @app.post("/register")
 async def register_node(capabilities: dict):
-    _check_db()
-    assert db is not None
+    db_instance = _check_db()
     node_caps = NodeCapabilities.from_dict(capabilities)
-    db.register_node(node_caps.node_id, node_caps)
+    db_instance.register_node(node_caps.node_id, node_caps)
     return {"status": "registered", "token": join_token}
 
 
 @app.post("/heartbeat")
 async def heartbeat(data: dict):
-    _check_db()
-    assert db is not None
+    db_instance = _check_db()
     node_id = data.get("node_id")
     if not node_id:
         raise HTTPException(status_code=400, detail="node_id required")
-    db.update_heartbeat(node_id)
+    db_instance.update_heartbeat(node_id)
     return {"status": "ok"}
 
 
@@ -95,18 +83,25 @@ async def submit_job(compute: str, gpus: int | None = None, function_code: str =
 
 @app.get("/compute")
 async def get_compute():
-    _check_db()
-    assert db is not None
-    return {"compute": db.get_available_compute()}
+    return {"compute": _check_db().get_available_compute()}
+
+
+@app.get("/ray-address")
+async def get_ray_address():
+    if not ray_manager:
+        raise HTTPException(status_code=500, detail="Ray manager not initialized")
+    address = ray_manager.get_address()
+    if not address:
+        raise HTTPException(status_code=500, detail="Ray cluster not running")
+    return {"ray_address": address}
 
 
 @app.get("/status")
 async def get_status():
-    _check_db()
-    assert db is not None
-    jobs = db.get_all_jobs()
+    db_instance = _check_db()
+    jobs = db_instance.get_all_jobs()
     return {
-        "compute": db.get_available_compute(),
+        "compute": db_instance.get_available_compute(),
         "jobs": [
             {
                 "job_id": j.job_id,
@@ -122,9 +117,7 @@ async def get_status():
 
 @app.get("/jobs/{job_id}/logs")
 async def get_job_logs(job_id: str):
-    _check_db()
-    assert db is not None
-    job = db.get_job(job_id)
+    job = _check_db().get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return StreamingResponse(

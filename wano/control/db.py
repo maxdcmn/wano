@@ -98,15 +98,7 @@ class Database:
             ),
         )
 
-    def get_job(self, job_id: str) -> Job | None:
-        conn = sqlite3.connect(self.db_path)
-        row = conn.execute(
-            "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error FROM jobs WHERE job_id = ?",
-            (job_id,),
-        ).fetchone()
-        conn.close()
-        if not row:
-            return None
+    def _row_to_job(self, row: tuple) -> Job:
         return Job(
             job_id=row[0],
             compute=row[1],
@@ -120,25 +112,19 @@ class Database:
             error=row[9],
         )
 
+    def get_job(self, job_id: str) -> Job | None:
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error FROM jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        conn.close()
+        return self._row_to_job(row) if row else None
+
     def get_all_jobs(self) -> list[Job]:
         conn = sqlite3.connect(self.db_path)
-        jobs = []
-        for row in conn.execute(
+        rows = conn.execute(
             "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error FROM jobs ORDER BY created_at DESC"
-        ).fetchall():
-            jobs.append(
-                Job(
-                    job_id=row[0],
-                    compute=row[1],
-                    gpus=row[2],
-                    status=JobStatus(row[3]),
-                    node_ids=json.loads(row[4]) if row[4] else None,
-                    created_at=datetime.fromisoformat(row[5]) if row[5] else None,
-                    started_at=datetime.fromisoformat(row[6]) if row[6] else None,
-                    completed_at=datetime.fromisoformat(row[7]) if row[7] else None,
-                    function_code=row[8],
-                    error=row[9],
-                )
-            )
+        ).fetchall()
         conn.close()
-        return jobs
+        return [self._row_to_job(row) for row in rows]
