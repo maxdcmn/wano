@@ -54,10 +54,16 @@ class Database:
     def get_available_compute(self) -> dict[str, list[dict]]:
         conn = sqlite3.connect(self.db_path)
         result: dict[str, list[dict]] = {}
-        for compute_type, spec_json in conn.execute(
-            "SELECT type, spec_json FROM compute WHERE node_id IN (SELECT node_id FROM nodes WHERE status = 'active')"
+        for node_id, compute_type, spec_json in conn.execute(
+            "SELECT node_id, type, spec_json FROM compute WHERE node_id IN (SELECT node_id FROM nodes WHERE status = 'active')"
         ).fetchall():
-            result.setdefault(compute_type, []).append(json.loads(spec_json))
+            spec = json.loads(spec_json)
+            if isinstance(spec, dict):
+                spec["node_id"] = node_id
+            elif isinstance(spec, list):
+                for item in spec:
+                    item["node_id"] = node_id
+            result.setdefault(compute_type, []).append(spec)
         conn.close()
         return result
 

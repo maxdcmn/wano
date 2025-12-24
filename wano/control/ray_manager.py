@@ -13,7 +13,8 @@ class RayManager:
         if self.is_running:
             return
         os.environ["RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO"] = "0"
-        os.environ["RAY_ADDRESS"] = "127.0.0.1:10001"
+        if "RAY_ADDRESS" in os.environ:
+            del os.environ["RAY_ADDRESS"]
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, message=".*RAY_ACCEL.*")
             try:

@@ -3,7 +3,6 @@ import os
 import signal
 import sys
 import time
-from collections import Counter
 from pathlib import Path
 
 import click
@@ -89,44 +88,6 @@ def join(control_plane_url: str):
 
 
 @cli.command()
-@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
-def compute(control_plane_url: str):
-    try:
-        data = requests.get(f"{control_plane_url}/compute", timeout=5).json()
-        click.echo("Available compute:\n")
-        if "gpu" in data.get("compute", {}):
-            gpus = data["compute"]["gpu"]
-            click.echo(f"gpu ({len(gpus)} total)")
-            gpu_counts: Counter[str] = Counter()
-            for gpu in gpus:
-                for g in gpu if isinstance(gpu, list) else [gpu]:
-                    gpu_counts[g["name"]] += 1
-            for name, count in gpu_counts.items():
-                memory = next(
-                    (
-                        g["memory_gb"]
-                        for g in (gpus[0] if isinstance(gpus[0], list) else gpus)
-                        if g["name"] == name
-                    ),
-                    "?",
-                )
-                click.echo(f"  - {name} ({memory} GB) ×{count}")
-        if "cpu" in data.get("compute", {}):
-            cpu = data["compute"]["cpu"]
-            cpu = cpu[0] if isinstance(cpu, list) else cpu
-            click.echo(f"\ncpu\n  - {cpu['cores']} cores, {cpu['memory_gb']} GB RAM")
-    except requests.exceptions.ConnectionError:
-        click.echo(
-            f"Error: Could not connect to control plane\n  Is the control plane running at {control_plane_url}?\n  Start it with: wano up",
-            err=True,
-        )
-        sys.exit(1)
-    except requests.exceptions.RequestException as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-
-
-@cli.command()
 @click.argument("script")
 @click.option("--compute", required=True, type=click.Choice(["cpu", "gpu"]), help="Compute type")
 @click.option("--gpus", type=int, help="Number of GPUs (for GPU jobs)")
@@ -162,9 +123,25 @@ def status(control_plane_url: str):
         click.echo("Cluster Status:\n\nCompute:")
         compute = data.get("compute", {})
         if "gpu" in compute:
-            click.echo(f"  GPU: {len(compute['gpu'])} available")
+            gpus = compute["gpu"]
+            click.echo(f"  GPU: {len(gpus)} available")
+            for gpu in gpus:
+                if isinstance(gpu, list):
+                    node_id = gpu[0].get("node_id", "unknown") if gpu else "unknown"
+                    click.echo(f"    {node_id}: {len(gpu)} GPU(s)")
+                else:
+                    node_id = gpu.get("node_id", "unknown")
+                    click.echo(
+                        f"    {node_id}: {gpu.get('name', 'GPU')} ({gpu.get('memory_gb', '?')} GB)"
+                    )
         if "cpu" in compute:
-            click.echo(f"  CPU: {len(compute['cpu'])} available")
+            cpus = compute["cpu"]
+            click.echo(f"  CPU: {len(cpus)} available")
+            for cpu in cpus:
+                node_id = cpu.get("node_id", "unknown")
+                click.echo(
+                    f"    {node_id}: {cpu.get('cores', '?')} cores, {cpu.get('memory_gb', '?')} GB RAM"
+                )
         click.echo("\nJobs:")
         jobs = data.get("jobs", [])
         if jobs:
