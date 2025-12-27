@@ -27,6 +27,9 @@ dev = [
     "types-requests>=2.31.0",
     "types-psutil>=5.9.0",
 ]
+macos = [
+    "macmon-python>=0.1.0",
+]
 
 [project.scripts]
 wano = "wano.cli.main:cli"

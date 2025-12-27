@@ -58,12 +58,11 @@ async def register_node(capabilities: dict):
 
 
 @app.post("/heartbeat")
-async def heartbeat(data: dict):
+async def heartbeat(capabilities: dict):
     db_instance = _check_db()
-    node_id = data.get("node_id")
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-    db_instance.update_heartbeat(node_id)
+    node_caps = NodeCapabilities.from_dict(capabilities)
+    db_instance.update_heartbeat(node_caps.node_id)
+    db_instance.register_node(node_caps.node_id, node_caps)
     return {"status": "ok"}
 
 
@@ -102,6 +101,7 @@ async def get_status():
     jobs = db_instance.get_all_jobs()
     return {
         "compute": db_instance.get_available_compute(),
+        "active_nodes": db_instance.get_active_nodes(),
         "jobs": [
             {
                 "job_id": j.job_id,

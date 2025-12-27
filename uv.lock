@@ -287,6 +287,15 @@ wheels = [
 ]
 
 [[package]]
+name = "macmon-python"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/93/21/50ca5285a8b3892fbfbd87b4f6ca7b75c5064586a546d0aa13407e2cbf04/macmon_python-0.1.2.tar.gz", hash = "sha256:49735bcbc256cfeed7cb3775f838460f5f23c1995f8e45c1acda1b48b6727ab1", size = 690424 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c2/6f/b5a47bd3c3a9a3cbc9180f89a2c420f55f22ff577ca2e52fc613a391b1e5/macmon_python-0.1.2-py3-none-any.whl", hash = "sha256:268b17019a7bcf071af201199c095dc2e9f5a896b7e10f46bdf0eb2c1bb54193", size = 692452 },
+]
+
+[[package]]
 name = "msgpack"
 version = "1.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -876,11 +885,15 @@ dev = [
     { name = "types-psutil" },
     { name = "types-requests" },
 ]
+macos = [
+    { name = "macmon-python" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.0.0" },
     { name = "fastapi", specifier = ">=0.100.0" },
+    { name = "macmon-python", marker = "extra == 'macos'", specifier = ">=0.1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0" },
     { name = "nvidia-ml-py", specifier = ">=12.0.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.5.0" },
@@ -893,7 +906,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.23.0" },
     { name = "zeroconf", specifier = ">=0.60.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "macos"]
 
 [[package]]
 name = "zeroconf"

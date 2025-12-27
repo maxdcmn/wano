@@ -62,9 +62,10 @@ class NodeAgent:
             try:
                 if not self.capabilities:
                     break
+                self.capabilities = detect_all()
                 requests.post(
                     f"{self.control_plane_url}/heartbeat",
-                    json={"node_id": self.capabilities.node_id},
+                    json=self.capabilities.to_dict(),
                 ).raise_for_status()
             except Exception as e:
                 print(f"Heartbeat failed: {e}")

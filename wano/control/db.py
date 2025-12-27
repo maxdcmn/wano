@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from wano.models.compute import CPUSpec, NodeCapabilities
@@ -36,9 +36,33 @@ class Database:
         )
         for compute_type, spec in capabilities.compute.items():
             if compute_type == "gpu" and isinstance(spec, list):
-                spec_json = json.dumps([{"name": g.name, "memory_gb": g.memory_gb} for g in spec])
+                spec_json = json.dumps(
+                    [
+                        {
+                            "name": g.name,
+                            "memory_gb": g.memory_gb,
+                            "fan_percent": g.fan_percent,
+                            "power_usage_w": g.power_usage_w,
+                            "power_cap_w": g.power_cap_w,
+                            "utilization_percent": g.utilization_percent,
+                            "memory_used_mib": g.memory_used_mib,
+                        }
+                        for g in spec
+                    ]
+                )
             elif compute_type == "cpu" and isinstance(spec, CPUSpec):
-                spec_json = json.dumps({"cores": spec.cores, "memory_gb": spec.memory_gb})
+                spec_json = json.dumps(
+                    {
+                        "cores": spec.cores,
+                        "memory_gb": spec.memory_gb,
+                        "name": spec.name,
+                        "temp_celsius": spec.temp_celsius,
+                        "power_usage_w": spec.power_usage_w,
+                        "power_cap_w": spec.power_cap_w,
+                        "utilization_percent": spec.utilization_percent,
+                        "memory_used_mib": spec.memory_used_mib,
+                    }
+                )
             else:
                 continue
             self._execute(
@@ -51,11 +75,28 @@ class Database:
             "UPDATE nodes SET last_seen = ? WHERE node_id = ?", (datetime.utcnow(), node_id)
         )
 
-    def get_available_compute(self) -> dict[str, list[dict]]:
+    def get_active_nodes(self, heartbeat_timeout_seconds: int = 30) -> list[str]:
         conn = sqlite3.connect(self.db_path)
+        cutoff = datetime.utcnow() - timedelta(seconds=heartbeat_timeout_seconds)
+        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S.%f")
+        active = [
+            row[0]
+            for row in conn.execute(
+                "SELECT node_id FROM nodes WHERE status = 'active' AND last_seen > ?",
+                (cutoff_str,),
+            ).fetchall()
+        ]
+        conn.close()
+        return active
+
+    def get_available_compute(self, heartbeat_timeout_seconds: int = 30) -> dict[str, list[dict]]:
+        conn = sqlite3.connect(self.db_path)
+        cutoff = datetime.utcnow() - timedelta(seconds=heartbeat_timeout_seconds)
+        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S.%f")
         result: dict[str, list[dict]] = {}
         for node_id, compute_type, spec_json in conn.execute(
-            "SELECT node_id, type, spec_json FROM compute WHERE node_id IN (SELECT node_id FROM nodes WHERE status = 'active')"
+            "SELECT node_id, type, spec_json FROM compute WHERE node_id IN (SELECT node_id FROM nodes WHERE status = 'active' AND last_seen > ?)",
+            (cutoff_str,),
         ).fetchall():
             spec = json.loads(spec_json)
             if isinstance(spec, dict):
