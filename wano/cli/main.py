@@ -15,6 +15,7 @@ import click
 import requests
 
 import wano
+from wano.agent.discovery import discover_control_plane
 from wano.agent.worker import NodeAgent
 from wano.control.process_manager import (
     get_pid,
@@ -56,6 +57,13 @@ def up(port: int, ray_port: int, db_path: str):
         click.echo(f"Control plane is already running (PID: {existing_pid})", err=True)
         click.echo("Use 'wano down' to stop it first", err=True)
         sys.exit(1)
+
+    existing = discover_control_plane(timeout=2.0)
+    if existing:
+        click.echo(f"Control plane already exists on network: {existing}", err=True)
+        click.echo("Join it with: wano join", err=True)
+        sys.exit(1)
+
     db_path_expanded = Path(db_path).expanduser()
     db_path_expanded.parent.mkdir(parents=True, exist_ok=True)
     log_file = Path.home() / ".wano" / "wano.log"
@@ -92,7 +100,7 @@ def up(port: int, ray_port: int, db_path: str):
             err=True,
         )
     click.echo(
-        f"Control plane started\nPID: {pid}\nLogs: {log_file}\nAPI server: http://0.0.0.0:{port}\nRay head: port {ray_port}\nJoin token: wano-default-token\n\nUse 'wano down' to stop the control plane"
+        f"Control plane started\nPID: {pid}\nLogs: {log_file}\nAPI: http://0.0.0.0:{port}\nRay: port {ray_port}\n\nUse 'wano down' to stop"
     )
 
 

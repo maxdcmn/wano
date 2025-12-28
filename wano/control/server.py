@@ -17,7 +17,6 @@ db: Database | None = None
 ray_manager: RayManager | None = None
 scheduler: Scheduler | None = None
 zeroconf_instance: Zeroconf | None = None
-join_token: str = "wano-default-token"
 
 
 def init_control_plane(db_path: Path, ray_port: int = 10001, api_port: int = 8000):
@@ -37,7 +36,6 @@ def start_mdns_advertising(port: int = 8000):
         "wano-control-plane._wano._tcp.local.",
         addresses=[socket.inet_aton(local_ip)],
         port=port,
-        properties={"token": join_token.encode()},
     )
     zeroconf_instance = Zeroconf()
     zeroconf_instance.register_service(info)
@@ -54,7 +52,7 @@ async def register_node(capabilities: dict):
     db_instance = _check_db()
     node_caps = NodeCapabilities.from_dict(capabilities)
     db_instance.register_node(node_caps.node_id, node_caps)
-    return {"status": "registered", "token": join_token}
+    return {"status": "registered"}
 
 
 @app.post("/heartbeat")
