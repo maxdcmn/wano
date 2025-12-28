@@ -4,7 +4,7 @@ from pathlib import Path
 
 try:
     from wano.control.server import init_control_plane, run_server
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     print(f"Error importing server module: {e}", file=sys.stderr)
     traceback.print_exc()
     sys.exit(1)
@@ -22,7 +22,7 @@ def main():
         db_path.parent.mkdir(parents=True, exist_ok=True)
         init_control_plane(db_path, ray_port, port)
         run_server(port=port)
-    except Exception as e:
+    except (ValueError, OSError, RuntimeError) as e:
         print(f"Error starting server: {e}", file=sys.stderr)
         traceback.print_exc()
         sys.exit(1)

@@ -11,8 +11,10 @@ with warnings.catch_warnings():
         import pynvml
 
         HAS_NVML = True
+        NVMLError = pynvml.NVMLError
     except ImportError:
         HAS_NVML = False
+        NVMLError = type("NVMLError", (Exception,), {})
 
 try:
     import torch
@@ -40,19 +42,19 @@ def detect_gpus() -> list[GPUSpec]:
                     power_cap = None
                     utilization = None
                     memory_used = None
-                    with contextlib.suppress(Exception):
+                    with contextlib.suppress(NVMLError):
                         fan = pynvml.nvmlDeviceGetFanSpeed(handle)
-                    with contextlib.suppress(Exception):
+                    with contextlib.suppress(NVMLError):
                         power_usage = pynvml.nvmlDeviceGetPowerUsage(handle) // 1000
                         power_cap = (
                             pynvml.nvmlDeviceGetPowerManagementLimitConstraints(handle)[1] // 1000
                         )
-                    with contextlib.suppress(Exception):
+                    with contextlib.suppress(NVMLError):
                         util = pynvml.nvmlDeviceGetUtilizationRates(handle)
                         utilization = float(util.gpu)
                     mem_info = None
                     memory_used = None
-                    with contextlib.suppress(Exception):
+                    with contextlib.suppress(NVMLError):
                         mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
                         memory_used = int(mem_info.used // (1024**2))
                     gpus.append(
@@ -68,7 +70,7 @@ def detect_gpus() -> list[GPUSpec]:
                     )
                 pynvml.nvmlShutdown()
             return gpus
-        except Exception:
+        except (NVMLError, RuntimeError):
             pass
     if HAS_TORCH and torch.cuda.is_available():
         for i in range(torch.cuda.device_count()):
@@ -103,7 +105,7 @@ def _get_cpu_metrics() -> tuple[float | None, float | None, float | None]:
                         and (total := soc.get("pcpu_cores", 0) + soc.get("ecpu_cores", 0)) > 0
                     ):
                         power_max = total * 5.0
-    except Exception:
+    except (ImportError, RuntimeError, json.JSONDecodeError):
         pass
     if temp is None and psutil:
         with contextlib.suppress(Exception):

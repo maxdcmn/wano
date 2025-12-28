@@ -2,7 +2,6 @@ import base64
 import contextlib
 import json
 import os
-import platform
 import signal
 import socket
 import sys
@@ -33,8 +32,10 @@ with warnings.catch_warnings():
         import pynvml
 
         HAS_NVML = True
+        NVMLError = pynvml.NVMLError
     except ImportError:
         HAS_NVML = False
+        NVMLError = type("NVMLError", (Exception,), {})
 
 try:
     import psutil
@@ -92,7 +93,7 @@ def up(port: int, ray_port: int, db_path: str):
         try:
             if requests.get(f"http://localhost:{port}/status", timeout=0.5).status_code == 200:
                 break
-        except Exception:
+        except requests.exceptions.RequestException:
             pass
     else:
         click.echo(
@@ -159,7 +160,7 @@ def _get_real_time_cpu_usage() -> float:
         return 0.0
     try:
         return psutil.cpu_percent(interval=0.1)
-    except Exception:
+    except (AttributeError, RuntimeError):
         return 0.0
 
 
@@ -174,12 +175,12 @@ def _get_real_time_gpu_usage() -> list[float]:
             utilizations = []
             for i in range(gpu_count):
                 handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(NVMLError):
                     util = pynvml.nvmlDeviceGetUtilizationRates(handle)
                     utilizations.append(util.gpu)
             pynvml.nvmlShutdown()
             return utilizations
-    except Exception:
+    except (NVMLError, AttributeError):
         return []
 
 
@@ -196,56 +197,17 @@ def _get_real_time_gpu_power() -> list[tuple[int | None, int | None]]:
                 handle = pynvml.nvmlDeviceGetHandleByIndex(i)
                 power_usage = None
                 power_cap = None
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(NVMLError):
                     power_usage = pynvml.nvmlDeviceGetPowerUsage(handle) // 1000
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(NVMLError):
                     power_cap = (
                         pynvml.nvmlDeviceGetPowerManagementLimitConstraints(handle)[1] // 1000
                     )
                 power_data.append((power_usage, power_cap))
             pynvml.nvmlShutdown()
             return power_data
-    except Exception:
+    except (NVMLError, AttributeError):
         return []
-
-
-def _get_cpu_metrics() -> tuple[float | None, float | None, float | None]:
-    temp = power = power_max = None
-    try:
-        if platform.system() == "Darwin":
-            with contextlib.suppress(ImportError, Exception):
-                from macmon import MacMon
-
-                m = MacMon().get_metrics()
-                metrics = json.loads(m) if isinstance(m, str) else m
-                if metrics:
-                    if (
-                        "temp" in metrics
-                        and (t := metrics["temp"].get("cpu_temp_avg"))
-                        and 0 < t < 150
-                    ):
-                        temp = float(t)
-                    if "cpu_power" in metrics and (p := metrics["cpu_power"]) and p > 0:
-                        power = float(p)
-                    if (
-                        isinstance(soc := metrics.get("soc"), dict)
-                        and "pcpu_cores" in soc
-                        and "ecpu_cores" in soc
-                        and (total := soc.get("pcpu_cores", 0) + soc.get("ecpu_cores", 0)) > 0
-                    ):
-                        power_max = total * 5.0
-    except Exception:
-        pass
-    if temp is None and psutil:
-        with contextlib.suppress(Exception):
-            if hasattr(psutil, "sensors_temperatures"):
-                temps = psutil.sensors_temperatures()
-                if temps:
-                    for entries in temps.values():
-                        if entries and (t := entries[0].current) and t > 0:
-                            temp = float(t)
-                            break
-    return temp, power, power_max
 
 
 def _is_current_node(node_id: str, current_hostname: str) -> bool:

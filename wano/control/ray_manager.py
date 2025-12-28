@@ -13,8 +13,8 @@ def get_local_ip() -> str:
         local_ip = s.getsockname()[0]
         s.close()
         return str(local_ip)
-    except Exception:
-        with contextlib.suppress(Exception):
+    except OSError:
+        with contextlib.suppress(socket.gaierror):
             result = socket.gethostbyname(socket.gethostname())
             return str(result) if result else "127.0.0.1"
     return "127.0.0.1"
@@ -42,7 +42,7 @@ class RayManager:
                     _temp_dir="/tmp/ray",
                     include_dashboard=False,
                 )
-            except Exception as e:
+            except RuntimeError as e:
                 if "already been initialized" not in str(e).lower():
                     raise
         self.is_running = True

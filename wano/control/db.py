@@ -27,45 +27,47 @@ class Database:
             conn.commit()
 
     def register_node(self, node_id: str, capabilities: NodeCapabilities):
-        self._execute(
-            "INSERT OR REPLACE INTO nodes (node_id, last_seen, status) VALUES (?, ?, ?)",
-            (node_id, datetime.now(UTC), "active"),
-        )
-        for compute_type, spec in capabilities.compute.items():
-            if compute_type == "gpu" and isinstance(spec, list):
-                spec_json = json.dumps(
-                    [
-                        {
-                            "name": g.name,
-                            "memory_gb": g.memory_gb,
-                            "fan_percent": g.fan_percent,
-                            "power_usage_w": g.power_usage_w,
-                            "power_cap_w": g.power_cap_w,
-                            "utilization_percent": g.utilization_percent,
-                            "memory_used_mib": g.memory_used_mib,
-                        }
-                        for g in spec
-                    ]
-                )
-            elif compute_type == "cpu" and isinstance(spec, CPUSpec):
-                spec_json = json.dumps(
-                    {
-                        "cores": spec.cores,
-                        "memory_gb": spec.memory_gb,
-                        "name": spec.name,
-                        "temp_celsius": spec.temp_celsius,
-                        "power_usage_w": spec.power_usage_w,
-                        "power_cap_w": spec.power_cap_w,
-                        "utilization_percent": spec.utilization_percent,
-                        "memory_used_mib": spec.memory_used_mib,
-                    }
-                )
-            else:
-                continue
-            self._execute(
-                "INSERT OR REPLACE INTO compute (node_id, type, spec_json) VALUES (?, ?, ?)",
-                (node_id, compute_type, spec_json),
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO nodes (node_id, last_seen, status) VALUES (?, ?, ?)",
+                (node_id, datetime.now(UTC), "active"),
             )
+            for compute_type, spec in capabilities.compute.items():
+                if compute_type == "gpu" and isinstance(spec, list):
+                    spec_json = json.dumps(
+                        [
+                            {
+                                "name": g.name,
+                                "memory_gb": g.memory_gb,
+                                "fan_percent": g.fan_percent,
+                                "power_usage_w": g.power_usage_w,
+                                "power_cap_w": g.power_cap_w,
+                                "utilization_percent": g.utilization_percent,
+                                "memory_used_mib": g.memory_used_mib,
+                            }
+                            for g in spec
+                        ]
+                    )
+                elif compute_type == "cpu" and isinstance(spec, CPUSpec):
+                    spec_json = json.dumps(
+                        {
+                            "cores": spec.cores,
+                            "memory_gb": spec.memory_gb,
+                            "name": spec.name,
+                            "temp_celsius": spec.temp_celsius,
+                            "power_usage_w": spec.power_usage_w,
+                            "power_cap_w": spec.power_cap_w,
+                            "utilization_percent": spec.utilization_percent,
+                            "memory_used_mib": spec.memory_used_mib,
+                        }
+                    )
+                else:
+                    continue
+                conn.execute(
+                    "INSERT OR REPLACE INTO compute (node_id, type, spec_json) VALUES (?, ?, ?)",
+                    (node_id, compute_type, spec_json),
+                )
+            conn.commit()
 
     def update_heartbeat(self, node_id: str):
         self._execute(
@@ -105,10 +107,12 @@ class Database:
 
     def create_job(self, job_id: str, compute: str, gpus: int | None, function_code: str) -> Job:
         now = datetime.now(UTC)
-        self._execute(
-            "INSERT INTO jobs (job_id, compute, gpus, status, created_at, function_code) VALUES (?, ?, ?, ?, ?, ?)",
-            (job_id, compute, gpus, JobStatus.PENDING.value, now, function_code),
-        )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO jobs (job_id, compute, gpus, status, created_at, function_code) VALUES (?, ?, ?, ?, ?, ?)",
+                (job_id, compute, gpus, JobStatus.PENDING.value, now, function_code),
+            )
+            conn.commit()
         return Job(
             job_id=job_id,
             compute=compute,

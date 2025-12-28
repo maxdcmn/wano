@@ -1,7 +1,6 @@
 import os
 import signal
 import subprocess
-from io import TextIOWrapper
 from pathlib import Path
 
 
@@ -44,13 +43,18 @@ def kill_process(pid: int) -> bool:
 
 
 def start_detached(command: list, log_file: Path | None = None) -> int:
-    stdout: int | TextIOWrapper
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        stdout = open(log_file, "w")  # noqa: SIM115
-        stderr = subprocess.STDOUT
-    else:
-        stdout = subprocess.DEVNULL
-        stderr = subprocess.DEVNULL
-    process = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True)
+        with open(log_file, "w") as f:
+            process = subprocess.Popen(
+                command,
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=False,
+            )
+            return process.pid
+    process = subprocess.Popen(
+        command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+    )
     return process.pid

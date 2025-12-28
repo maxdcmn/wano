@@ -1,6 +1,7 @@
 import socket
 import uuid
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -48,7 +49,7 @@ def _check_db() -> Database:
 
 
 @app.post("/register")
-async def register_node(capabilities: dict):
+async def register_node(capabilities: dict[str, Any]):
     db_instance = _check_db()
     node_caps = NodeCapabilities.from_dict(capabilities)
     db_instance.register_node(node_caps.node_id, node_caps)
@@ -56,7 +57,7 @@ async def register_node(capabilities: dict):
 
 
 @app.post("/heartbeat")
-async def heartbeat(capabilities: dict):
+async def heartbeat(capabilities: dict[str, Any]):
     db_instance = _check_db()
     node_caps = NodeCapabilities.from_dict(capabilities)
     db_instance.update_heartbeat(node_caps.node_id)

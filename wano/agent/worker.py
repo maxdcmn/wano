@@ -1,3 +1,4 @@
+import contextlib
 import os
 import time
 import warnings
@@ -43,7 +44,7 @@ class NodeAgent:
             response = requests.get(f"{self.control_plane_url}/ray-address", timeout=5)
             response.raise_for_status()
             ray_address = response.json()["ray_address"]
-        except Exception as e:
+        except (requests.exceptions.RequestException, KeyError) as e:
             print(
                 f"Warning: Could not get Ray address from control plane: {e}\nRay worker will not be available, but node registration succeeded"
             )
@@ -52,7 +53,7 @@ class NodeAgent:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=FutureWarning, message=".*RAY_ACCEL.*")
                 ray.init(address=ray_address, ignore_reinit_error=True)
-        except Exception as e:
+        except (RuntimeError, ConnectionError) as e:
             print(
                 f"Warning: Could not connect to Ray cluster at {ray_address}: {e}\nRay worker will not be available, but node registration succeeded\nMake sure the control plane Ray head is running and accessible"
             )
@@ -66,11 +67,15 @@ class NodeAgent:
                 requests.post(
                     f"{self.control_plane_url}/heartbeat",
                     json=self.capabilities.to_dict(),
+                    timeout=5,
                 ).raise_for_status()
-            except Exception as e:
+            except (requests.exceptions.RequestException, RuntimeError) as e:
                 print(f"Heartbeat failed: {e}")
+            except KeyboardInterrupt:
+                break
             time.sleep(10)
 
     def stop(self):
         self.running = False
-        ray.shutdown()
+        with contextlib.suppress(Exception):
+            ray.shutdown()
