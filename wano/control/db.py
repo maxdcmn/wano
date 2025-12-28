@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from wano.models.compute import CPUSpec, NodeCapabilities
@@ -13,26 +13,23 @@ class Database:
         self._init_schema()
 
     def _init_schema(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS nodes (node_id TEXT PRIMARY KEY, last_seen TIMESTAMP, status TEXT);
-            CREATE TABLE IF NOT EXISTS compute (node_id TEXT, type TEXT, spec_json TEXT, PRIMARY KEY (node_id, type), FOREIGN KEY (node_id) REFERENCES nodes(node_id));
-            CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, compute TEXT, gpus INTEGER, status TEXT, node_ids TEXT, created_at TIMESTAMP, started_at TIMESTAMP, completed_at TIMESTAMP, function_code TEXT, error TEXT);
-        """)
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS nodes (node_id TEXT PRIMARY KEY, last_seen TIMESTAMP, status TEXT);
+                CREATE TABLE IF NOT EXISTS compute (node_id TEXT, type TEXT, spec_json TEXT, PRIMARY KEY (node_id, type), FOREIGN KEY (node_id) REFERENCES nodes(node_id));
+                CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, compute TEXT, gpus INTEGER, status TEXT, node_ids TEXT, created_at TIMESTAMP, started_at TIMESTAMP, completed_at TIMESTAMP, function_code TEXT, error TEXT);
+            """)
+            conn.commit()
 
     def _execute(self, query: str, params=()):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(query, params)
+            conn.commit()
 
     def register_node(self, node_id: str, capabilities: NodeCapabilities):
         self._execute(
             "INSERT OR REPLACE INTO nodes (node_id, last_seen, status) VALUES (?, ?, ?)",
-            (node_id, datetime.utcnow(), "active"),
+            (node_id, datetime.now(UTC), "active"),
         )
         for compute_type, spec in capabilities.compute.items():
             if compute_type == "gpu" and isinstance(spec, list):
@@ -72,60 +69,59 @@ class Database:
 
     def update_heartbeat(self, node_id: str):
         self._execute(
-            "UPDATE nodes SET last_seen = ? WHERE node_id = ?", (datetime.utcnow(), node_id)
+            "UPDATE nodes SET last_seen = ? WHERE node_id = ?", (datetime.now(UTC), node_id)
         )
 
     def get_active_nodes(self, heartbeat_timeout_seconds: int = 30) -> list[str]:
-        conn = sqlite3.connect(self.db_path)
-        cutoff = datetime.utcnow() - timedelta(seconds=heartbeat_timeout_seconds)
+        cutoff = datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)
         cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S.%f")
-        active = [
-            row[0]
-            for row in conn.execute(
-                "SELECT node_id FROM nodes WHERE status = 'active' AND last_seen > ?",
-                (cutoff_str,),
-            ).fetchall()
-        ]
-        conn.close()
+        with sqlite3.connect(self.db_path) as conn:
+            active = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT node_id FROM nodes WHERE status = 'active' AND last_seen > ?",
+                    (cutoff_str,),
+                ).fetchall()
+            ]
         return active
 
     def get_available_compute(self, heartbeat_timeout_seconds: int = 30) -> dict[str, list[dict]]:
-        conn = sqlite3.connect(self.db_path)
-        cutoff = datetime.utcnow() - timedelta(seconds=heartbeat_timeout_seconds)
+        cutoff = datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)
         cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S.%f")
         result: dict[str, list[dict]] = {}
-        for node_id, compute_type, spec_json in conn.execute(
-            "SELECT node_id, type, spec_json FROM compute WHERE node_id IN (SELECT node_id FROM nodes WHERE status = 'active' AND last_seen > ?)",
-            (cutoff_str,),
-        ).fetchall():
-            spec = json.loads(spec_json)
-            if isinstance(spec, dict):
-                spec["node_id"] = node_id
-            elif isinstance(spec, list):
-                for item in spec:
-                    item["node_id"] = node_id
-            result.setdefault(compute_type, []).append(spec)
-        conn.close()
+        with sqlite3.connect(self.db_path) as conn:
+            for node_id, compute_type, spec_json in conn.execute(
+                "SELECT node_id, type, spec_json FROM compute WHERE node_id IN (SELECT node_id FROM nodes WHERE status = 'active' AND last_seen > ?)",
+                (cutoff_str,),
+            ).fetchall():
+                spec = json.loads(spec_json)
+                if isinstance(spec, dict):
+                    spec["node_id"] = node_id
+                elif isinstance(spec, list):
+                    for item in spec:
+                        item["node_id"] = node_id
+                result.setdefault(compute_type, []).append(spec)
         return result
 
     def create_job(self, job_id: str, compute: str, gpus: int | None, function_code: str) -> Job:
+        now = datetime.now(UTC)
         self._execute(
             "INSERT INTO jobs (job_id, compute, gpus, status, created_at, function_code) VALUES (?, ?, ?, ?, ?, ?)",
-            (job_id, compute, gpus, JobStatus.PENDING.value, datetime.utcnow(), function_code),
+            (job_id, compute, gpus, JobStatus.PENDING.value, now, function_code),
         )
         return Job(
             job_id=job_id,
             compute=compute,
             gpus=gpus,
             status=JobStatus.PENDING,
-            created_at=datetime.utcnow(),
+            created_at=now,
             function_code=function_code,
         )
 
     def assign_job(self, job_id: str, node_ids: list[str]):
         self._execute(
             "UPDATE jobs SET node_ids = ?, status = ?, started_at = ? WHERE job_id = ?",
-            (json.dumps(node_ids), JobStatus.RUNNING.value, datetime.utcnow(), job_id),
+            (json.dumps(node_ids), JobStatus.RUNNING.value, datetime.now(UTC), job_id),
         )
 
     def complete_job(self, job_id: str, error: str | None = None):
@@ -133,7 +129,7 @@ class Database:
             "UPDATE jobs SET status = ?, completed_at = ?, error = ? WHERE job_id = ?",
             (
                 JobStatus.FAILED.value if error else JobStatus.COMPLETED.value,
-                datetime.utcnow(),
+                datetime.now(UTC),
                 error,
                 job_id,
             ),
@@ -154,18 +150,16 @@ class Database:
         )
 
     def get_job(self, job_id: str) -> Job | None:
-        conn = sqlite3.connect(self.db_path)
-        row = conn.execute(
-            "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error FROM jobs WHERE job_id = ?",
-            (job_id,),
-        ).fetchone()
-        conn.close()
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
         return self._row_to_job(row) if row else None
 
     def get_all_jobs(self) -> list[Job]:
-        conn = sqlite3.connect(self.db_path)
-        rows = conn.execute(
-            "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error FROM jobs ORDER BY created_at DESC"
-        ).fetchall()
-        conn.close()
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error FROM jobs ORDER BY created_at DESC"
+            ).fetchall()
         return [self._row_to_job(row) for row in rows]

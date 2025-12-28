@@ -1,4 +1,6 @@
 import base64
+import re
+from collections.abc import Callable
 
 import ray
 import requests
@@ -33,9 +35,18 @@ def submit_job(
 def execute_on_ray(
     job_id: str, function_code: bytes, node_ids: list, compute: str, gpus: int | None = None
 ):
-    import pickle
+    source_code = function_code.decode("utf-8")
+    namespace: dict[str, Callable] = {}
+    exec(compile(source_code, "<string>", "exec"), namespace)
 
-    func = pickle.loads(function_code)
+    match = re.search(r"def\s+(\w+)\s*\(", source_code)
+    if not match:
+        raise ValueError("Could not find function definition in source code")
+    func_name = match.group(1)
+
+    if func_name not in namespace:
+        raise ValueError(f"Function {func_name} not found in executed namespace")
+    func = namespace[func_name]
     num_gpus = gpus or 1 if compute == "gpu" else 0
     if num_gpus > 1:
         bundles = [{"GPU": 1} for _ in range(num_gpus)]
