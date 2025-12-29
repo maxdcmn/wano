@@ -2,6 +2,24 @@
 
 Local-first compute orchestration for multi-node CPU/GPU workloads. Request abstract compute types, not specific devices. Automatic node discovery, distributed execution via Ray, self-hosted with no cloud dependency.
 
+```mermaid
+graph TD
+    User[User] -->|Submit Job| API[Control Plane<br/>FastAPI + Scheduler]
+
+    subgraph "Control Plane"
+        API <--> DB[(SQLite DB)]
+        RayHead[Ray Head]
+    end
+
+    Worker[Worker Nodes] -->|Discover via mDNS & Register| API
+    Worker -->|Join Cluster| RayHead
+
+    API -->|Schedule & Execute| RayHead
+    RayHead -->|Run Tasks| Worker
+
+
+```
+
 ## CLI Commands
 
 - `wano up` - Start the control plane (runs detached by default)
