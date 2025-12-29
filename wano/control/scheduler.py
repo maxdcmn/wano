@@ -1,8 +1,10 @@
+from typing import Any
+
 from wano.models.job import Job
 
 
 class Scheduler:
-    def schedule_job(self, job: Job, available_compute: dict[str, list[dict]]) -> list[str] | None:
+    def schedule_job(self, job: Job, available_compute: dict[str, list[Any]]) -> list[str] | None:
         if job.compute == "cpu":
             if "cpu" in available_compute and available_compute["cpu"]:
                 return [available_compute["cpu"][0].get("node_id", "unknown")]
@@ -12,7 +14,7 @@ class Scheduler:
         return None
 
     def _schedule_gpu_job(
-        self, job: Job, available_compute: dict[str, list[dict]]
+        self, job: Job, available_compute: dict[str, list[Any]]
     ) -> list[str] | None:
         if "gpu" not in available_compute:
             return None

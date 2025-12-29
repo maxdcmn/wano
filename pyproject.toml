@@ -26,6 +26,10 @@ dev = [
     "mypy>=1.5.0",
     "types-requests>=2.31.0",
     "types-psutil>=5.9.0",
+    "pre-commit>=4.5.1",
+    "pytest>=7.4.0",
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
 ]
 macos = [
     "macmon-python>=0.1.0",
@@ -52,6 +56,7 @@ ignore = ["E501", "B008", "C901"]
 "wano/control/scheduler.py" = ["ARG002", "B007"]
 "wano/control/ray_manager.py" = ["ARG002"]
 "wano/execution/runner.py" = ["ARG001"]
+"tests/**/*.py" = ["ARG001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["wano"]

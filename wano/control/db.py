@@ -30,7 +30,7 @@ class Database:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO nodes (node_id, last_seen, status) VALUES (?, ?, ?)",
-                (node_id, datetime.now(UTC), "active"),
+                (node_id, datetime.now(UTC).isoformat(), "active"),
             )
             for compute_type, spec in capabilities.compute.items():
                 if compute_type == "gpu" and isinstance(spec, list):
@@ -71,12 +71,13 @@ class Database:
 
     def update_heartbeat(self, node_id: str):
         self._execute(
-            "UPDATE nodes SET last_seen = ? WHERE node_id = ?", (datetime.now(UTC), node_id)
+            "UPDATE nodes SET last_seen = ? WHERE node_id = ?",
+            (datetime.now(UTC).isoformat(), node_id),
         )
 
     def get_active_nodes(self, heartbeat_timeout_seconds: int = 30) -> list[str]:
         cutoff = datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)
-        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S.%f")
+        cutoff_str = cutoff.isoformat()
         with sqlite3.connect(self.db_path) as conn:
             active = [
                 row[0]
@@ -89,7 +90,7 @@ class Database:
 
     def get_available_compute(self, heartbeat_timeout_seconds: int = 30) -> dict[str, list[dict]]:
         cutoff = datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)
-        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S.%f")
+        cutoff_str = cutoff.isoformat()
         result: dict[str, list[dict]] = {}
         with sqlite3.connect(self.db_path) as conn:
             for node_id, compute_type, spec_json in conn.execute(
@@ -110,7 +111,7 @@ class Database:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 "INSERT INTO jobs (job_id, compute, gpus, status, created_at, function_code) VALUES (?, ?, ?, ?, ?, ?)",
-                (job_id, compute, gpus, JobStatus.PENDING.value, now, function_code),
+                (job_id, compute, gpus, JobStatus.PENDING.value, now.isoformat(), function_code),
             )
             conn.commit()
         return Job(
@@ -125,7 +126,7 @@ class Database:
     def assign_job(self, job_id: str, node_ids: list[str]):
         self._execute(
             "UPDATE jobs SET node_ids = ?, status = ?, started_at = ? WHERE job_id = ?",
-            (json.dumps(node_ids), JobStatus.RUNNING.value, datetime.now(UTC), job_id),
+            (json.dumps(node_ids), JobStatus.RUNNING.value, datetime.now(UTC).isoformat(), job_id),
         )
 
     def complete_job(self, job_id: str, error: str | None = None):
@@ -133,7 +134,7 @@ class Database:
             "UPDATE jobs SET status = ?, completed_at = ?, error = ? WHERE job_id = ?",
             (
                 JobStatus.FAILED.value if error else JobStatus.COMPLETED.value,
-                datetime.now(UTC),
+                datetime.now(UTC).isoformat(),
                 error,
                 job_id,
             ),
