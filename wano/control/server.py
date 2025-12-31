@@ -1,4 +1,5 @@
 import socket
+import threading
 import traceback
 import uuid
 from pathlib import Path
@@ -20,6 +21,8 @@ db: Database | None = None
 ray_manager: RayManager | None = None
 scheduler: Scheduler | None = None
 zeroconf_instance: Zeroconf | None = None
+job_logs: dict[str, list[str]] = {}
+_logs_lock = threading.Lock()
 
 
 def init_control_plane(db_path: Path, ray_port: int = 10001, api_port: int = 8000):
@@ -73,8 +76,11 @@ def _run_job(job_id: str, function_code: str, node_ids: list[str], compute: str,
         if db:
             db.complete_job(job_id)
     except Exception as e:
+        error_msg = str(e) + "\n" + traceback.format_exc()
+        with _logs_lock:
+            job_logs.setdefault(job_id, []).append(f"ERROR: {error_msg}")
         if db:
-            db.complete_job(job_id, error=str(e) + "\n" + traceback.format_exc())
+            db.complete_job(job_id, error=error_msg)
 
 
 @app.post("/submit")
@@ -137,9 +143,17 @@ async def get_job_logs(job_id: str):
     job = _check_db().get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return StreamingResponse(
-        (f"Logs for job {job_id}\n", "Not implemented yet\n"), media_type="text/plain"
-    )
+
+    def generate():
+        with _logs_lock:
+            logs = job_logs.get(job_id, [])
+        if not logs:
+            yield "No logs available yet.\n"
+        else:
+            for line in logs:
+                yield f"{line}\n"
+
+    return StreamingResponse(generate(), media_type="text/plain")
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8000):

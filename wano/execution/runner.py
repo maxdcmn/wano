@@ -1,5 +1,7 @@
 import base64
+import io
 import re
+import sys
 from collections.abc import Callable
 
 import ray
@@ -32,6 +34,32 @@ def submit_job(
     raise ValueError("Invalid response: missing job_id")
 
 
+def _capture_output(func: Callable) -> Callable:
+    def wrapper():
+        log_buffer = io.StringIO()
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = log_buffer
+        sys.stderr = log_buffer
+        try:
+            result = func()
+            return result, log_buffer.getvalue()
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+    return wrapper
+
+
+def _store_logs(job_id: str, logs: str):
+    if not logs:
+        return
+    from wano.control.server import _logs_lock, job_logs
+
+    with _logs_lock:
+        job_logs.setdefault(job_id, []).extend(logs.splitlines())
+
+
 def execute_on_ray(
     job_id: str, function_code: str, node_ids: list, compute: str, gpus: int | None = None
 ):
@@ -47,21 +75,26 @@ def execute_on_ray(
     if func_name not in namespace:
         raise ValueError(f"Function {func_name} not found in executed namespace")
     func = namespace[func_name]
+    wrapped_func = _capture_output(func)
     num_gpus = gpus or 1 if compute == "gpu" else 0
     if num_gpus > 1:
         bundles = [{"GPU": 1} for _ in range(num_gpus)]
         pg = ray.util.placement_group(bundles, strategy="STRICT_SPREAD")
         ray.get(pg.ready())
-        ray.get(
+        results = ray.get(
             [
-                ray.remote(num_gpus=1)(lambda: func()).options(placement_group=pg).remote()
+                ray.remote(num_gpus=1)(lambda: wrapped_func()).options(placement_group=pg).remote()
                 for _ in range(num_gpus)
             ]
         )
+        for _result, logs in results:
+            _store_logs(job_id, logs)
     elif num_gpus == 1:
-        ray.get(ray.remote(num_gpus=1)(lambda: func()).remote())
+        _result, logs = ray.get(ray.remote(num_gpus=1)(lambda: wrapped_func()).remote())
+        _store_logs(job_id, logs)
     else:
-        ray.get(ray.remote(num_cpus=1)(lambda: func()).remote())
+        _result, logs = ray.get(ray.remote(num_cpus=1)(lambda: wrapped_func()).remote())
+        _store_logs(job_id, logs)
 
 
 def stream_logs(job_id: str, control_plane_url: str = "http://localhost:8000"):
