@@ -1,16 +1,18 @@
 import socket
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from zeroconf import ServiceInfo, Zeroconf
 
 from wano.control.db import Database
 from wano.control.ray_manager import RayManager, get_local_ip
 from wano.control.scheduler import Scheduler
+from wano.execution.runner import execute_on_ray
 from wano.models.compute import NodeCapabilities
 
 app = FastAPI(title="Wano Control Plane")
@@ -65,8 +67,23 @@ async def heartbeat(capabilities: dict[str, Any]):
     return {"status": "ok"}
 
 
+def _run_job(job_id: str, function_code: str, node_ids: list[str], compute: str, gpus: int | None):
+    try:
+        execute_on_ray(job_id, function_code, node_ids, compute, gpus)
+        if db:
+            db.complete_job(job_id)
+    except Exception as e:
+        if db:
+            db.complete_job(job_id, error=str(e) + "\n" + traceback.format_exc())
+
+
 @app.post("/submit")
-async def submit_job(compute: str, gpus: int | None = None, function_code: str = ""):
+async def submit_job(
+    background_tasks: BackgroundTasks,
+    compute: str,
+    gpus: int | None = None,
+    function_code: str = "",
+):
     if not db or not scheduler:
         raise HTTPException(status_code=500, detail="Control plane not initialized")
     job_id = str(uuid.uuid4())
@@ -76,6 +93,7 @@ async def submit_job(compute: str, gpus: int | None = None, function_code: str =
     if not node_ids:
         return {"status": "pending", "job_id": job_id, "message": "No available compute"}
     db.assign_job(job_id, node_ids)
+    background_tasks.add_task(_run_job, job_id, function_code, node_ids, compute, gpus)
     return {"status": "submitted", "job_id": job_id, "node_ids": node_ids}
 
 

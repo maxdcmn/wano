@@ -33,9 +33,9 @@ def submit_job(
 
 
 def execute_on_ray(
-    job_id: str, function_code: bytes, node_ids: list, compute: str, gpus: int | None = None
+    job_id: str, function_code: str, node_ids: list, compute: str, gpus: int | None = None
 ):
-    source_code = function_code.decode("utf-8")
+    source_code = base64.b64decode(function_code).decode("utf-8")
     namespace: dict[str, Callable] = {}
     exec(compile(source_code, "<string>", "exec"), namespace)
 
