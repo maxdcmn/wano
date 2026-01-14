@@ -138,6 +138,24 @@ async def get_status():
     }
 
 
+@app.get("/jobs/{job_id}")
+async def get_job(job_id: str):
+    job = _check_db().get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "job_id": job.job_id,
+        "compute": job.compute,
+        "gpus": job.gpus,
+        "status": job.status.value,
+        "node_ids": job.node_ids,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "error": job.error,
+    }
+
+
 @app.get("/jobs/{job_id}/logs")
 async def get_job_logs(job_id: str):
     job = _check_db().get_job(job_id)
