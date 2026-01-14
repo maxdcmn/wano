@@ -1,4 +1,5 @@
 import base64
+import json
 
 import pytest
 
@@ -9,6 +10,16 @@ def test_execute_on_ray_cpu():
     function_code = base64.b64encode(b"def task(): return 123").decode()
     result = execute_on_ray("test-job", function_code, ["node1"], "cpu", None)
     assert result == 123
+
+
+def test_execute_on_ray_with_args_and_kwargs():
+    function_code = base64.b64encode(b"def task(x, y, z=1): return x + y + z").decode()
+    args = json.dumps([10, 20])
+    kwargs = json.dumps({"z": 5})
+    result = execute_on_ray(
+        "test-job-both", function_code, ["node1"], "cpu", None, args=args, kwargs=kwargs
+    )
+    assert result == 35
 
 
 def test_execute_on_ray_handles_errors():

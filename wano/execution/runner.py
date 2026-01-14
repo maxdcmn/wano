@@ -61,8 +61,16 @@ def _store_logs(job_id: str, logs: str):
 
 
 def execute_on_ray(
-    job_id: str, function_code: str, node_ids: list, compute: str, gpus: int | None = None
+    job_id: str,
+    function_code: str,
+    node_ids: list,
+    compute: str,
+    gpus: int | None = None,
+    args: str | None = None,
+    kwargs: str | None = None,
 ):
+    import json
+
     source_code = base64.b64decode(function_code).decode("utf-8")
     namespace: dict[str, Callable] = {}
     exec(compile(source_code, "<string>", "exec"), namespace)
@@ -75,7 +83,14 @@ def execute_on_ray(
     if func_name not in namespace:
         raise ValueError(f"Function {func_name} not found in executed namespace")
     func = namespace[func_name]
-    wrapped_func = _capture_output(func)
+
+    parsed_args = json.loads(args) if args else []
+    parsed_kwargs = json.loads(kwargs) if kwargs else {}
+
+    def call_func():
+        return func(*parsed_args, **parsed_kwargs)
+
+    wrapped_func = _capture_output(call_func)
     num_gpus = gpus or 1 if compute == "gpu" else 0
     if num_gpus > 1:
         bundles = [{"GPU": 1} for _ in range(num_gpus)]

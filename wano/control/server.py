@@ -71,9 +71,17 @@ async def heartbeat(capabilities: dict[str, Any]):
     return {"status": "ok"}
 
 
-def _run_job(job_id: str, function_code: str, node_ids: list[str], compute: str, gpus: int | None):
+def _run_job(
+    job_id: str,
+    function_code: str,
+    node_ids: list[str],
+    compute: str,
+    gpus: int | None,
+    args: str | None = None,
+    kwargs: str | None = None,
+):
     try:
-        result = execute_on_ray(job_id, function_code, node_ids, compute, gpus)
+        result = execute_on_ray(job_id, function_code, node_ids, compute, gpus, args, kwargs)
         if db:
             result_json = json.dumps(result) if result is not None else None
             db.complete_job(job_id, result=result_json)
@@ -91,17 +99,21 @@ async def submit_job(
     compute: str,
     gpus: int | None = None,
     function_code: str = "",
+    args: str | None = None,
+    kwargs: str | None = None,
 ):
     if not db or not scheduler:
         raise HTTPException(status_code=500, detail="Control plane not initialized")
     job_id = str(uuid.uuid4())
-    job = db.create_job(job_id, compute, gpus, function_code)
+    job = db.create_job(job_id, compute, gpus, function_code, args, kwargs)
     available_compute = db.get_available_compute()
     node_ids = scheduler.schedule_job(job, available_compute)
     if not node_ids:
         return {"status": "pending", "job_id": job_id, "message": "No available compute"}
     db.assign_job(job_id, node_ids)
-    background_tasks.add_task(_run_job, job_id, function_code, node_ids, compute, gpus)
+    background_tasks.add_task(
+        _run_job, job_id, function_code, node_ids, compute, gpus, args, kwargs
+    )
     return {"status": "submitted", "job_id": job_id, "node_ids": node_ids}
 
 

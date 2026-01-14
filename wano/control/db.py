@@ -17,7 +17,7 @@ class Database:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS nodes (node_id TEXT PRIMARY KEY, last_seen TIMESTAMP, status TEXT);
                 CREATE TABLE IF NOT EXISTS compute (node_id TEXT, type TEXT, spec_json TEXT, PRIMARY KEY (node_id, type), FOREIGN KEY (node_id) REFERENCES nodes(node_id));
-                CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, compute TEXT, gpus INTEGER, status TEXT, node_ids TEXT, created_at TIMESTAMP, started_at TIMESTAMP, completed_at TIMESTAMP, function_code TEXT, error TEXT, result TEXT);
+                CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, compute TEXT, gpus INTEGER, status TEXT, node_ids TEXT, created_at TIMESTAMP, started_at TIMESTAMP, completed_at TIMESTAMP, function_code TEXT, error TEXT, result TEXT, args TEXT, kwargs TEXT);
             """)
             conn.commit()
 
@@ -106,12 +106,29 @@ class Database:
                 result.setdefault(compute_type, []).append(spec)
         return result
 
-    def create_job(self, job_id: str, compute: str, gpus: int | None, function_code: str) -> Job:
+    def create_job(
+        self,
+        job_id: str,
+        compute: str,
+        gpus: int | None,
+        function_code: str,
+        args: str | None = None,
+        kwargs: str | None = None,
+    ) -> Job:
         now = datetime.now(UTC)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO jobs (job_id, compute, gpus, status, created_at, function_code) VALUES (?, ?, ?, ?, ?, ?)",
-                (job_id, compute, gpus, JobStatus.PENDING.value, now.isoformat(), function_code),
+                "INSERT INTO jobs (job_id, compute, gpus, status, created_at, function_code, args, kwargs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    job_id,
+                    compute,
+                    gpus,
+                    JobStatus.PENDING.value,
+                    now.isoformat(),
+                    function_code,
+                    args,
+                    kwargs,
+                ),
             )
             conn.commit()
         return Job(
@@ -121,6 +138,8 @@ class Database:
             status=JobStatus.PENDING,
             created_at=now,
             function_code=function_code,
+            args=args,
+            kwargs=kwargs,
         )
 
     def assign_job(self, job_id: str, node_ids: list[str]):
@@ -154,12 +173,14 @@ class Database:
             function_code=row[8],
             error=row[9],
             result=row[10],
+            args=row[11],
+            kwargs=row[12],
         )
 
     def get_job(self, job_id: str) -> Job | None:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error, result FROM jobs WHERE job_id = ?",
+                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error, result, args, kwargs FROM jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
         return self._row_to_job(row) if row else None
@@ -167,6 +188,6 @@ class Database:
     def get_all_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error, result FROM jobs ORDER BY created_at DESC"
+                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error, result, args, kwargs FROM jobs ORDER BY created_at DESC"
             ).fetchall()
         return [self._row_to_job(row) for row in rows]

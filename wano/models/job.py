@@ -23,3 +23,5 @@ class Job:
     function_code: str | None = None
     error: str | None = None
     result: str | None = None
+    args: str | None = None
+    kwargs: str | None = None

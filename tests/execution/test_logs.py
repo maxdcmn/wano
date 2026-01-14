@@ -3,7 +3,7 @@ import base64
 from wano.execution.runner import execute_on_ray
 
 
-def test_captures_stdout_logs(ray_cluster):
+def test_captures_stdout_logs():
     from wano.control.server import job_logs
 
     function_code = base64.b64encode(b"def task(): print('test output'); return 42").decode()
@@ -13,7 +13,7 @@ def test_captures_stdout_logs(ray_cluster):
     assert any("test output" in line for line in job_logs["test-job-logs"])
 
 
-def test_captures_multiple_lines(ray_cluster):
+def test_captures_multiple_lines():
     from wano.control.server import job_logs
 
     function_code = base64.b64encode(
