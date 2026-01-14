@@ -1,3 +1,4 @@
+import json
 import socket
 import threading
 import traceback
@@ -72,9 +73,10 @@ async def heartbeat(capabilities: dict[str, Any]):
 
 def _run_job(job_id: str, function_code: str, node_ids: list[str], compute: str, gpus: int | None):
     try:
-        execute_on_ray(job_id, function_code, node_ids, compute, gpus)
+        result = execute_on_ray(job_id, function_code, node_ids, compute, gpus)
         if db:
-            db.complete_job(job_id)
+            result_json = json.dumps(result) if result is not None else None
+            db.complete_job(job_id, result=result_json)
     except Exception as e:
         error_msg = str(e) + "\n" + traceback.format_exc()
         with _logs_lock:
@@ -132,6 +134,7 @@ async def get_status():
                 "gpus": j.gpus,
                 "status": j.status.value,
                 "node_ids": j.node_ids,
+                "result": j.result,
             }
             for j in jobs
         ],
@@ -153,6 +156,7 @@ async def get_job(job_id: str):
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
         "error": job.error,
+        "result": job.result,
     }
 
 

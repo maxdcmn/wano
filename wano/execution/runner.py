@@ -89,12 +89,15 @@ def execute_on_ray(
         )
         for _result, logs in results:
             _store_logs(job_id, logs)
+        return [r for r, _ in results]
     elif num_gpus == 1:
-        _result, logs = ray.get(ray.remote(num_gpus=1)(lambda: wrapped_func()).remote())
+        result, logs = ray.get(ray.remote(num_gpus=1)(lambda: wrapped_func()).remote())
         _store_logs(job_id, logs)
+        return result
     else:
-        _result, logs = ray.get(ray.remote(num_cpus=1)(lambda: wrapped_func()).remote())
+        result, logs = ray.get(ray.remote(num_cpus=1)(lambda: wrapped_func()).remote())
         _store_logs(job_id, logs)
+        return result
 
 
 def stream_logs(job_id: str, control_plane_url: str = "http://localhost:8000"):

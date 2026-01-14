@@ -7,7 +7,8 @@ from wano.execution.runner import execute_on_ray
 
 def test_execute_on_ray_cpu():
     function_code = base64.b64encode(b"def task(): return 123").decode()
-    execute_on_ray("test-job", function_code, ["node1"], "cpu", None)
+    result = execute_on_ray("test-job", function_code, ["node1"], "cpu", None)
+    assert result == 123
 
 
 def test_execute_on_ray_handles_errors():

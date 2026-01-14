@@ -17,7 +17,7 @@ class Database:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS nodes (node_id TEXT PRIMARY KEY, last_seen TIMESTAMP, status TEXT);
                 CREATE TABLE IF NOT EXISTS compute (node_id TEXT, type TEXT, spec_json TEXT, PRIMARY KEY (node_id, type), FOREIGN KEY (node_id) REFERENCES nodes(node_id));
-                CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, compute TEXT, gpus INTEGER, status TEXT, node_ids TEXT, created_at TIMESTAMP, started_at TIMESTAMP, completed_at TIMESTAMP, function_code TEXT, error TEXT);
+                CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, compute TEXT, gpus INTEGER, status TEXT, node_ids TEXT, created_at TIMESTAMP, started_at TIMESTAMP, completed_at TIMESTAMP, function_code TEXT, error TEXT, result TEXT);
             """)
             conn.commit()
 
@@ -129,13 +129,14 @@ class Database:
             (json.dumps(node_ids), JobStatus.RUNNING.value, datetime.now(UTC).isoformat(), job_id),
         )
 
-    def complete_job(self, job_id: str, error: str | None = None):
+    def complete_job(self, job_id: str, error: str | None = None, result: str | None = None):
         self._execute(
-            "UPDATE jobs SET status = ?, completed_at = ?, error = ? WHERE job_id = ?",
+            "UPDATE jobs SET status = ?, completed_at = ?, error = ?, result = ? WHERE job_id = ?",
             (
                 JobStatus.FAILED.value if error else JobStatus.COMPLETED.value,
                 datetime.now(UTC).isoformat(),
                 error,
+                result,
                 job_id,
             ),
         )
@@ -152,12 +153,13 @@ class Database:
             completed_at=datetime.fromisoformat(row[7]) if row[7] else None,
             function_code=row[8],
             error=row[9],
+            result=row[10],
         )
 
     def get_job(self, job_id: str) -> Job | None:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error FROM jobs WHERE job_id = ?",
+                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error, result FROM jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
         return self._row_to_job(row) if row else None
@@ -165,6 +167,6 @@ class Database:
     def get_all_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error FROM jobs ORDER BY created_at DESC"
+                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error, result FROM jobs ORDER BY created_at DESC"
             ).fetchall()
         return [self._row_to_job(row) for row in rows]

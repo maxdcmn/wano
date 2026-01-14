@@ -35,6 +35,23 @@ def test_job_fails_with_error(db):
     assert job.error == "error"
 
 
+def test_job_stores_result(db):
+    job = db.create_job("job3", "cpu", None, "def f(): pass")
+    db.assign_job("job3", ["node1"])
+    db.complete_job("job3", result='{"value": 42}')
+    job = db.get_job("job3")
+    assert job.status == JobStatus.COMPLETED
+    assert job.result == '{"value": 42}'
+
+
+def test_get_job_returns_result(db):
+    job = db.create_job("job4", "cpu", None, "def f(): pass")
+    db.assign_job("job4", ["node1"])
+    db.complete_job("job4", result='{"result": "success"}')
+    job = db.get_job("job4")
+    assert job.result == '{"result": "success"}'
+
+
 def test_heartbeat_keeps_node_active(db):
     capabilities = NodeCapabilities(
         node_id="node1", compute={"cpu": CPUSpec(cores=8, memory_gb=16)}
