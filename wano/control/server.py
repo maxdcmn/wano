@@ -1,6 +1,8 @@
+import contextlib
 import json
 import socket
 import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -37,6 +39,7 @@ def init_control_plane(db_path: Path, ray_port: int = 10001, api_port: int = 800
     ray_manager.start(ray_port)
     scheduler = Scheduler()
     start_mdns_advertising(api_port)
+    _start_pending_job_retry()
 
 
 def start_mdns_advertising(port: int = 8000):
@@ -208,6 +211,43 @@ async def get_job_logs(job_id: str):
                 yield f"{line}\n"
 
     return StreamingResponse(generate(), media_type="text/plain")
+
+
+def _retry_pending_jobs():
+    if not db or not scheduler:
+        return
+    pending_jobs = db.get_pending_jobs()
+    if not pending_jobs:
+        return
+    available_compute = db.get_available_compute()
+    for job in pending_jobs:
+        node_ids = scheduler.schedule_job(job, available_compute)
+        if node_ids:
+            db.assign_job(job.job_id, node_ids)
+            threading.Thread(
+                target=_run_job,
+                args=(
+                    job.job_id,
+                    job.function_code or "",
+                    node_ids,
+                    job.compute,
+                    job.gpus,
+                    job.args,
+                    job.kwargs,
+                ),
+                daemon=True,
+            ).start()
+            break
+
+
+def _start_pending_job_retry():
+    def retry_loop():
+        while True:
+            time.sleep(5)
+            with contextlib.suppress(Exception):
+                _retry_pending_jobs()
+
+    threading.Thread(target=retry_loop, daemon=True).start()
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8000):

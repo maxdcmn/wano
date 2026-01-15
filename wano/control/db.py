@@ -192,6 +192,14 @@ class Database:
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
+    def get_pending_jobs(self) -> list[Job]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error, result, args, kwargs FROM jobs WHERE status = ? ORDER BY created_at ASC",
+                (JobStatus.PENDING.value,),
+            ).fetchall()
+        return [self._row_to_job(row) for row in rows]
+
     def cancel_job(self, job_id: str):
         self._execute(
             "UPDATE jobs SET status = ?, completed_at = ? WHERE job_id = ?",

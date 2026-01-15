@@ -70,6 +70,16 @@ def test_heartbeat_timeout(db):
     assert "node1" not in db.get_active_nodes(heartbeat_timeout_seconds=0)
 
 
+def test_get_pending_jobs(db):
+    db.create_job("job1", "cpu", None, "def f(): pass")
+    db.create_job("job2", "cpu", None, "def f(): pass")
+    db.assign_job("job2", ["node1"])
+    pending = db.get_pending_jobs()
+    assert len(pending) == 1
+    assert pending[0].job_id == "job1"
+    assert pending[0].status == JobStatus.PENDING
+
+
 def test_cancel_job(db):
     job = db.create_job("job1", "cpu", None, "def f(): pass")
     db.assign_job("job1", ["node1"])
