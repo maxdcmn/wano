@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import ray
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -16,6 +17,7 @@ from wano.control.ray_manager import RayManager, get_local_ip
 from wano.control.scheduler import Scheduler
 from wano.execution.runner import execute_on_ray
 from wano.models.compute import NodeCapabilities
+from wano.models.job import JobStatus
 
 app = FastAPI(title="Wano Control Plane")
 db: Database | None = None
@@ -24,6 +26,8 @@ scheduler: Scheduler | None = None
 zeroconf_instance: Zeroconf | None = None
 job_logs: dict[str, list[str]] = {}
 _logs_lock = threading.Lock()
+running_tasks: dict[str, list] = {}
+_tasks_lock = threading.Lock()
 
 
 def init_control_plane(db_path: Path, ray_port: int = 10001, api_port: int = 8000):
@@ -170,6 +174,22 @@ async def get_job(job_id: str):
         "error": job.error,
         "result": job.result,
     }
+
+
+@app.delete("/jobs/{job_id}")
+async def cancel_job(job_id: str):
+    job = _check_db().get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != JobStatus.RUNNING:
+        raise HTTPException(status_code=400, detail=f"Job is {job.status.value}, cannot cancel")
+    with _tasks_lock:
+        tasks = running_tasks.get(job_id, [])
+        for task in tasks:
+            ray.cancel(task, force=True)
+        running_tasks.pop(job_id, None)
+    _check_db().cancel_job(job_id)
+    return {"status": "cancelled", "job_id": job_id}
 
 
 @app.get("/jobs/{job_id}/logs")

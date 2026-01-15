@@ -68,3 +68,11 @@ def test_heartbeat_timeout(db):
     )
     db.register_node("node1", capabilities)
     assert "node1" not in db.get_active_nodes(heartbeat_timeout_seconds=0)
+
+
+def test_cancel_job(db):
+    job = db.create_job("job1", "cpu", None, "def f(): pass")
+    db.assign_job("job1", ["node1"])
+    db.cancel_job("job1")
+    job = db.get_job("job1")
+    assert job.status == JobStatus.CANCELLED

@@ -191,3 +191,9 @@ class Database:
                 "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error, result, args, kwargs FROM jobs ORDER BY created_at DESC"
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
+
+    def cancel_job(self, job_id: str):
+        self._execute(
+            "UPDATE jobs SET status = ?, completed_at = ? WHERE job_id = ?",
+            (JobStatus.CANCELLED.value, datetime.now(UTC).isoformat(), job_id),
+        )

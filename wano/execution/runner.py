@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import re
 import sys
 from collections.abc import Callable
@@ -52,12 +53,11 @@ def _capture_output(func: Callable) -> Callable:
 
 
 def _store_logs(job_id: str, logs: str):
-    if not logs:
-        return
-    from wano.control.server import _logs_lock, job_logs
+    if logs:
+        from wano.control.server import _logs_lock, job_logs
 
-    with _logs_lock:
-        job_logs.setdefault(job_id, []).extend(logs.splitlines())
+        with _logs_lock:
+            job_logs.setdefault(job_id, []).extend(logs.splitlines())
 
 
 def execute_on_ray(
@@ -69,8 +69,6 @@ def execute_on_ray(
     args: str | None = None,
     kwargs: str | None = None,
 ):
-    import json
-
     source_code = base64.b64decode(function_code).decode("utf-8")
     namespace: dict[str, Callable] = {}
     exec(compile(source_code, "<string>", "exec"), namespace)
@@ -92,27 +90,33 @@ def execute_on_ray(
 
     wrapped_func = _capture_output(call_func)
     num_gpus = gpus or 1 if compute == "gpu" else 0
+
     if num_gpus > 1:
         bundles = [{"GPU": 1} for _ in range(num_gpus)]
         pg = ray.util.placement_group(bundles, strategy="STRICT_SPREAD")
         ray.get(pg.ready())
-        results = ray.get(
-            [
-                ray.remote(num_gpus=1)(lambda: wrapped_func()).options(placement_group=pg).remote()
-                for _ in range(num_gpus)
-            ]
-        )
+        tasks = [
+            ray.remote(num_gpus=1)(lambda: wrapped_func()).options(placement_group=pg).remote()
+            for _ in range(num_gpus)
+        ]
+    elif num_gpus == 1:
+        tasks = [ray.remote(num_gpus=1)(lambda: wrapped_func()).remote()]
+    else:
+        tasks = [ray.remote(num_cpus=1)(lambda: wrapped_func()).remote()]
+
+    from wano.control.server import _tasks_lock, running_tasks
+
+    with _tasks_lock:
+        running_tasks[job_id] = tasks
+
+    try:
+        results = ray.get(tasks)
         for _result, logs in results:
             _store_logs(job_id, logs)
-        return [r for r, _ in results]
-    elif num_gpus == 1:
-        result, logs = ray.get(ray.remote(num_gpus=1)(lambda: wrapped_func()).remote())
-        _store_logs(job_id, logs)
-        return result
-    else:
-        result, logs = ray.get(ray.remote(num_cpus=1)(lambda: wrapped_func()).remote())
-        _store_logs(job_id, logs)
-        return result
+        return [r for r, _ in results] if num_gpus > 1 else results[0][0]
+    finally:
+        with _tasks_lock:
+            running_tasks.pop(job_id, None)
 
 
 def stream_logs(job_id: str, control_plane_url: str = "http://localhost:8000"):
