@@ -154,6 +154,7 @@ async def get_status():
                 "status": j.status.value,
                 "node_ids": j.node_ids,
                 "result": j.result,
+                "error": j.error,
             }
             for j in jobs
         ],

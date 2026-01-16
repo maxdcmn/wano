@@ -465,6 +465,14 @@ def status(control_plane_url: str):
                 f"{_truncate(job.get('status', ''), status_w):<{status_w}} |"
             )
         click.echo(sep_jobs)
+        failed_jobs = [j for j in jobs if j.get("status") == "failed" and j.get("error")]
+        if failed_jobs:
+            click.echo("\nFailed Jobs:")
+            for job in failed_jobs:
+                error_msg = job.get("error", "")
+                first_line = error_msg.split("\n")[0] if error_msg else ""
+                truncated_error = _truncate(first_line, 80) if first_line else "Unknown error"
+                click.echo(f"{job['job_id'][:8]}: {truncated_error}")
     except requests.exceptions.RequestException as e:
         _handle_connection_error(e, control_plane_url)
 
