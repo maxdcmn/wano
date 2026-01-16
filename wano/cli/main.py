@@ -44,6 +44,7 @@ except ImportError:
 
 
 @click.group()
+@click.version_option(version=wano.__version__)
 def cli():
     pass
 
@@ -124,12 +125,20 @@ def join(control_plane_url: str):
 @click.argument("script")
 @click.option("--compute", required=True, type=click.Choice(["cpu", "gpu"]), help="Compute type")
 @click.option("--gpus", type=int, help="Number of GPUs (for GPU jobs)")
+@click.option("--env", multiple=True, help="Environment variable (format: KEY=VALUE)")
 @click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
-def run(script: str, compute: str, gpus: int, control_plane_url: str):
+def run(script: str, compute: str, gpus: int, env: tuple[str, ...], control_plane_url: str):
     script_path = Path(script)
     if not script_path.exists():
         click.echo(f"Error: Script {script} not found", err=True)
         sys.exit(1)
+    env_vars = {}
+    for env_pair in env:
+        if "=" not in env_pair:
+            click.echo(f"Error: Invalid env format '{env_pair}'. Use KEY=VALUE", err=True)
+            sys.exit(1)
+        key, value = env_pair.split("=", 1)
+        env_vars[key] = value
     click.echo("Submitting job...\nNote: Function discovery not fully implemented in MVP")
     response = requests.post(
         f"{control_plane_url}/submit",
@@ -137,6 +146,7 @@ def run(script: str, compute: str, gpus: int, control_plane_url: str):
             "compute": compute,
             "gpus": gpus,
             "function_code": base64.b64encode(script_path.read_text().encode()).decode(),
+            "env_vars": json.dumps(env_vars) if env_vars else None,
         },
     )
     response.raise_for_status()

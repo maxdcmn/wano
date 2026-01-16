@@ -28,6 +28,17 @@ def test_execute_on_ray_handles_errors():
         execute_on_ray("test-job", function_code, ["node1"], "cpu", None)
 
 
+def test_execute_on_ray_with_env_vars():
+    function_code = base64.b64encode(
+        b"import os\ndef task(): return os.environ.get('TEST_VAR', 'not_set')"
+    ).decode()
+    env_vars = json.dumps({"TEST_VAR": "test_value"})
+    result = execute_on_ray(
+        "test-job-env", function_code, ["node1"], "cpu", None, env_vars=env_vars
+    )
+    assert result == "test_value"
+
+
 @pytest.mark.skip(reason="Requires GPU")
 def test_execute_on_ray_gpu():
     function_code = base64.b64encode(b"def task(): return 456").decode()

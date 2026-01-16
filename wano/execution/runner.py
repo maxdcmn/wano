@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import os
 import re
 import sys
 from collections.abc import Callable
@@ -68,6 +69,7 @@ def execute_on_ray(
     gpus: int | None = None,
     args: str | None = None,
     kwargs: str | None = None,
+    env_vars: str | None = None,
 ):
     source_code = base64.b64decode(function_code).decode("utf-8")
     namespace: dict[str, Callable] = {}
@@ -84,9 +86,21 @@ def execute_on_ray(
 
     parsed_args = json.loads(args) if args else []
     parsed_kwargs = json.loads(kwargs) if kwargs else {}
+    parsed_env_vars = json.loads(env_vars) if env_vars else {}
 
     def call_func():
-        return func(*parsed_args, **parsed_kwargs)
+        old_env = {}
+        try:
+            for key, value in parsed_env_vars.items():
+                old_env[key] = os.environ.get(key)
+                os.environ[key] = str(value)
+            return func(*parsed_args, **parsed_kwargs)
+        finally:
+            for key, old_value in old_env.items():
+                if old_value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = old_value
 
     wrapped_func = _capture_output(call_func)
     num_gpus = gpus or 1 if compute == "gpu" else 0

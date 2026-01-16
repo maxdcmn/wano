@@ -30,6 +30,8 @@ job_logs: dict[str, list[str]] = {}
 _logs_lock = threading.Lock()
 running_tasks: dict[str, list] = {}
 _tasks_lock = threading.Lock()
+job_env_vars: dict[str, str] = {}
+_env_vars_lock = threading.Lock()
 
 
 def init_control_plane(db_path: Path, ray_port: int = 10001, api_port: int = 8000):
@@ -86,9 +88,12 @@ def _run_job(
     gpus: int | None,
     args: str | None = None,
     kwargs: str | None = None,
+    env_vars: str | None = None,
 ):
     try:
-        result = execute_on_ray(job_id, function_code, node_ids, compute, gpus, args, kwargs)
+        result = execute_on_ray(
+            job_id, function_code, node_ids, compute, gpus, args, kwargs, env_vars
+        )
         if db:
             result_json = json.dumps(result) if result is not None else None
             db.complete_job(job_id, result=result_json)
@@ -98,6 +103,9 @@ def _run_job(
             job_logs.setdefault(job_id, []).append(f"ERROR: {error_msg}")
         if db:
             db.complete_job(job_id, error=error_msg)
+    finally:
+        with _env_vars_lock:
+            job_env_vars.pop(job_id, None)
 
 
 @app.post("/submit")
@@ -108,18 +116,22 @@ async def submit_job(
     function_code: str = "",
     args: str | None = None,
     kwargs: str | None = None,
+    env_vars: str | None = None,
 ):
     if not db or not scheduler:
         raise HTTPException(status_code=500, detail="Control plane not initialized")
     job_id = str(uuid.uuid4())
     job = db.create_job(job_id, compute, gpus, function_code, args, kwargs)
+    if env_vars:
+        with _env_vars_lock:
+            job_env_vars[job_id] = env_vars
     available_compute = db.get_available_compute()
     node_ids = scheduler.schedule_job(job, available_compute)
     if not node_ids:
         return {"status": "pending", "job_id": job_id, "message": "No available compute"}
     db.assign_job(job_id, node_ids)
     background_tasks.add_task(
-        _run_job, job_id, function_code, node_ids, compute, gpus, args, kwargs
+        _run_job, job_id, function_code, node_ids, compute, gpus, args, kwargs, env_vars
     )
     return {"status": "submitted", "job_id": job_id, "node_ids": node_ids}
 
@@ -225,6 +237,8 @@ def _retry_pending_jobs():
         node_ids = scheduler.schedule_job(job, available_compute)
         if node_ids:
             db.assign_job(job.job_id, node_ids)
+            with _env_vars_lock:
+                env_vars = job_env_vars.get(job.job_id)
             threading.Thread(
                 target=_run_job,
                 args=(
@@ -235,6 +249,7 @@ def _retry_pending_jobs():
                     job.gpus,
                     job.args,
                     job.kwargs,
+                    env_vars,
                 ),
                 daemon=True,
             ).start()
