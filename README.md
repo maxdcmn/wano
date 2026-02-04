@@ -26,7 +26,8 @@ graph TD
 - `wano down` - Stop the control plane
 - `wano join` - Register this machine as a worker node
 - `wano status` - View cluster status and active jobs
-- `wano run <script> --compute <cpu|gpu> [--gpus N]` - Submit and execute a job
+- `wano run <script> --compute <cpu|gpu> [--gpus N] [--function NAME] [--args JSON] [--kwargs JSON]` - Submit and execute a job
+- `wano build-executor [--requirements requirements.txt]` - Build the executor Docker image
 
 ## Python API
 
@@ -42,4 +43,13 @@ def train():
 def preprocess():
     # Runs on CPU resources
     ...
+```
+
+## Executor Image
+
+The executor image must include any Python dependencies used by your jobs.
+Build it once per project and reuse it:
+
+```
+wano build-executor --requirements requirements.txt
 ```

@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Protocol
 
-from wano.models.job import JobStatus
+from wano.models.job import Job, JobStatus
+
+
+class HasGetJob(Protocol):
+    def get_job(self, job_id: str) -> Job | None: ...
+
 
 _LOG_DIR = Path.home() / ".wano" / "logs"
 _LOCK = threading.Lock()
@@ -40,7 +46,7 @@ def read_lines(job_id: str) -> list[str]:
 def _read_new(path: Path, offset: int) -> tuple[list[str], int]:
     if not path.exists():
         return [], offset
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         f.seek(offset)
         chunk = f.read()
         new_offset = f.tell()
@@ -49,7 +55,7 @@ def _read_new(path: Path, offset: int) -> tuple[list[str], int]:
     return chunk.splitlines(), new_offset
 
 
-def stream_logs(job_id: str, get_db: Callable[[], object], poll_interval: float = 0.5):
+def stream_logs(job_id: str, get_db: Callable[[], HasGetJob], poll_interval: float = 0.5):
     path = get_log_path(job_id)
     offset = 0
     sent_any = False

@@ -159,7 +159,7 @@ def execute_on_ray(
             hostname = node.get("NodeManagerHostname") or node.get("Hostname")
             address = node.get("NodeManagerAddress")
             if wano_node_id in {node_id, hostname, address}:
-                return node_id
+                return node_id if isinstance(node_id, str) else None
         return None
 
     try:
@@ -182,7 +182,7 @@ def execute_on_ray(
         if ray_node_ids and len(ray_node_ids) == len(assignments):
             resolved_ray_ids = [
                 ray_id or _resolve_ray_node_id(node_id)
-                for ray_id, node_id in zip(ray_node_ids, assignments)
+                for ray_id, node_id in zip(ray_node_ids, assignments, strict=False)
             ]
         else:
             resolved_ray_ids = [_resolve_ray_node_id(node_id) for node_id in assignments]

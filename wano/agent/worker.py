@@ -24,7 +24,7 @@ class NodeAgent:
         if not node_id:
             return None
         with contextlib.suppress(AttributeError):
-            return node_id.hex()
+            return str(node_id.hex())
         return str(node_id)
 
     def _refresh_capabilities(self):

@@ -4,11 +4,14 @@ import json
 import os
 import signal
 import socket
+import subprocess
 import sys
+import tempfile
 import time
 import warnings
 from datetime import datetime
 from pathlib import Path
+from shutil import copyfile
 
 import click
 import requests
@@ -24,7 +27,7 @@ from wano.control.process_manager import (
     save_pid,
     start_detached,
 )
-from wano.execution.runner import stream_logs
+from wano.execution.runner import CONTAINER_IMAGE, stream_logs
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", category=FutureWarning, message=".*pynvml.*")
@@ -125,13 +128,45 @@ def join(control_plane_url: str):
 @click.argument("script")
 @click.option("--compute", required=True, type=click.Choice(["cpu", "gpu"]), help="Compute type")
 @click.option("--gpus", type=int, help="Number of GPUs (for GPU jobs)")
+@click.option("--function", "function_name", help="Function name to execute from the script")
+@click.option("--args", help="JSON array of positional args")
+@click.option("--kwargs", help="JSON object of keyword args")
 @click.option("--env", multiple=True, help="Environment variable (format: KEY=VALUE)")
 @click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
-def run(script: str, compute: str, gpus: int, env: tuple[str, ...], control_plane_url: str):
+def run(
+    script: str,
+    compute: str,
+    gpus: int,
+    function_name: str | None,
+    args: str | None,
+    kwargs: str | None,
+    env: tuple[str, ...],
+    control_plane_url: str,
+):
     script_path = Path(script)
     if not script_path.exists():
         click.echo(f"Error: Script {script} not found", err=True)
         sys.exit(1)
+    parsed_args: list | None = None
+    parsed_kwargs: dict | None = None
+    if args:
+        try:
+            parsed_args = json.loads(args)
+        except json.JSONDecodeError:
+            click.echo("Error: --args must be a JSON array", err=True)
+            sys.exit(1)
+        if not isinstance(parsed_args, list):
+            click.echo("Error: --args must be a JSON array", err=True)
+            sys.exit(1)
+    if kwargs:
+        try:
+            parsed_kwargs = json.loads(kwargs)
+        except json.JSONDecodeError:
+            click.echo("Error: --kwargs must be a JSON object", err=True)
+            sys.exit(1)
+        if not isinstance(parsed_kwargs, dict):
+            click.echo("Error: --kwargs must be a JSON object", err=True)
+            sys.exit(1)
     env_vars = {}
     for env_pair in env:
         if "=" not in env_pair:
@@ -139,20 +174,71 @@ def run(script: str, compute: str, gpus: int, env: tuple[str, ...], control_plan
             sys.exit(1)
         key, value = env_pair.split("=", 1)
         env_vars[key] = value
-    click.echo("Submitting job...\nNote: Function discovery not fully implemented in MVP")
-    response = requests.post(
-        f"{control_plane_url}/submit",
-        json={
-            "compute": compute,
-            "gpus": gpus,
-            "function_code": base64.b64encode(script_path.read_text().encode()).decode(),
-            "env_vars": json.dumps(env_vars) if env_vars else None,
-        },
-    )
+    if not function_name:
+        click.echo("Submitting job...\nNote: No --function provided, using first def in script")
+    else:
+        click.echo("Submitting job...")
+    payload: dict[str, object] = {
+        "compute": compute,
+        "gpus": gpus,
+        "function_name": function_name,
+        "function_code": base64.b64encode(script_path.read_text().encode()).decode(),
+        "env_vars": json.dumps(env_vars) if env_vars else None,
+    }
+    if parsed_args is not None:
+        payload["args"] = json.dumps(parsed_args)
+    if parsed_kwargs is not None:
+        payload["kwargs"] = json.dumps(parsed_kwargs)
+    response = requests.post(f"{control_plane_url}/submit", json=payload)
     response.raise_for_status()
     job_id = response.json()["job_id"]
     click.echo(f"Job submitted: {job_id}\nStreaming logs...")
     stream_logs(job_id, control_plane_url)
+
+
+@cli.command()
+@click.option(
+    "--requirements", type=click.Path(exists=True, dir_okay=False), help="Path to requirements.txt"
+)
+@click.option("--tag", default=CONTAINER_IMAGE, show_default=True, help="Docker image tag")
+@click.option("--base-image", default="python:3.12-slim", show_default=True)
+def build_executor(requirements: str | None, tag: str, base_image: str):
+    click.echo(f"Building executor image: {tag}")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        dockerfile = tmp_path / "Dockerfile"
+        if requirements:
+            req_path = Path(requirements)
+            copyfile(req_path, tmp_path / "requirements.txt")
+            dockerfile.write_text(
+                "\n".join(
+                    [
+                        f"FROM {base_image}",
+                        "WORKDIR /job",
+                        "COPY requirements.txt /tmp/requirements.txt",
+                        "RUN pip install --no-cache-dir ray requests",
+                        "RUN pip install --no-cache-dir -r /tmp/requirements.txt",
+                    ]
+                )
+                + "\n"
+            )
+        else:
+            dockerfile.write_text(
+                "\n".join(
+                    [
+                        f"FROM {base_image}",
+                        "WORKDIR /job",
+                        "RUN pip install --no-cache-dir ray requests",
+                    ]
+                )
+                + "\n"
+            )
+        try:
+            subprocess.run(["docker", "build", "-t", tag, str(tmp_path)], check=True)
+        except subprocess.CalledProcessError as e:
+            click.echo(f"Error: docker build failed ({e})", err=True)
+            sys.exit(1)
+    click.echo("Executor image built successfully")
 
 
 def _progress_bar(used: int, total: int, width: int = 10) -> str:
