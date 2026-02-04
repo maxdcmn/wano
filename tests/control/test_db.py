@@ -18,7 +18,7 @@ def test_register_node_and_get_compute(db):
 
 
 def test_job_completes_successfully(db):
-    job = db.create_job("job1", "cpu", None, "def f(): pass")
+    job = db.create_job("job1", "cpu", None, None, "def f(): pass")
     db.assign_job("job1", ["node1"])
     db.complete_job("job1")
     job = db.get_job("job1")
@@ -27,7 +27,7 @@ def test_job_completes_successfully(db):
 
 
 def test_job_fails_with_error(db):
-    job = db.create_job("job2", "cpu", None, "def f(): pass")
+    job = db.create_job("job2", "cpu", None, None, "def f(): pass")
     db.assign_job("job2", ["node1"])
     db.complete_job("job2", "error")
     job = db.get_job("job2")
@@ -36,7 +36,7 @@ def test_job_fails_with_error(db):
 
 
 def test_job_stores_result(db):
-    job = db.create_job("job3", "cpu", None, "def f(): pass")
+    job = db.create_job("job3", "cpu", None, None, "def f(): pass")
     db.assign_job("job3", ["node1"])
     db.complete_job("job3", result='{"value": 42}')
     job = db.get_job("job3")
@@ -45,7 +45,7 @@ def test_job_stores_result(db):
 
 
 def test_get_job_returns_result(db):
-    job = db.create_job("job4", "cpu", None, "def f(): pass")
+    job = db.create_job("job4", "cpu", None, None, "def f(): pass")
     db.assign_job("job4", ["node1"])
     db.complete_job("job4", result='{"result": "success"}')
     job = db.get_job("job4")
@@ -71,8 +71,8 @@ def test_heartbeat_timeout(db):
 
 
 def test_get_pending_jobs(db):
-    db.create_job("job1", "cpu", None, "def f(): pass")
-    db.create_job("job2", "cpu", None, "def f(): pass")
+    db.create_job("job1", "cpu", None, None, "def f(): pass")
+    db.create_job("job2", "cpu", None, None, "def f(): pass")
     db.assign_job("job2", ["node1"])
     pending = db.get_pending_jobs()
     assert len(pending) == 1
@@ -81,8 +81,15 @@ def test_get_pending_jobs(db):
 
 
 def test_cancel_job(db):
-    job = db.create_job("job1", "cpu", None, "def f(): pass")
+    job = db.create_job("job1", "cpu", None, None, "def f(): pass")
     db.assign_job("job1", ["node1"])
     db.cancel_job("job1")
     job = db.get_job("job1")
     assert job.status == JobStatus.CANCELLED
+
+
+def test_job_env_vars_persisted(db):
+    env_vars = '{"FOO": "bar"}'
+    db.create_job("job-env", "cpu", None, None, "def f(): pass", env_vars=env_vars)
+    job = db.get_job("job-env")
+    assert job.env_vars == env_vars

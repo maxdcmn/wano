@@ -21,8 +21,10 @@ class Job:
     created_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    function_name: str | None = None
     function_code: str | None = None
     error: str | None = None
     result: str | None = None
     args: str | None = None
     kwargs: str | None = None
+    env_vars: str | None = None

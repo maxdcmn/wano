@@ -14,6 +14,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from zeroconf import ServiceInfo, Zeroconf
 
+from wano.control import log_store
 from wano.control.db import Database
 from wano.control.ray_manager import RayManager, get_local_ip
 from wano.control.scheduler import Scheduler
@@ -26,12 +27,8 @@ db: Database | None = None
 ray_manager: RayManager | None = None
 scheduler: Scheduler | None = None
 zeroconf_instance: Zeroconf | None = None
-job_logs: dict[str, list[str]] = {}
-_logs_lock = threading.Lock()
 running_tasks: dict[str, list] = {}
 _tasks_lock = threading.Lock()
-job_env_vars: dict[str, str] = {}
-_env_vars_lock = threading.Lock()
 
 
 def init_control_plane(db_path: Path, ray_port: int = 10001, api_port: int = 8000):
@@ -83,7 +80,9 @@ async def heartbeat(capabilities: dict[str, Any]):
 def _run_job(
     job_id: str,
     function_code: str,
+    function_name: str | None,
     node_ids: list[str],
+    ray_node_ids: list[str | None] | None,
     compute: str,
     gpus: int | None,
     args: str | None = None,
@@ -92,20 +91,27 @@ def _run_job(
 ):
     try:
         result = execute_on_ray(
-            job_id, function_code, node_ids, compute, gpus, args, kwargs, env_vars
+            job_id,
+            function_code,
+            node_ids,
+            compute,
+            gpus,
+            args,
+            kwargs,
+            env_vars,
+            function_name=function_name,
+            ray_node_ids=ray_node_ids,
         )
         if db:
             result_json = json.dumps(result) if result is not None else None
             db.complete_job(job_id, result=result_json)
     except Exception as e:
         error_msg = str(e) + "\n" + traceback.format_exc()
-        with _logs_lock:
-            job_logs.setdefault(job_id, []).append(f"ERROR: {error_msg}")
+        log_store.append_lines(job_id, [f"ERROR: {error_msg}"])
         if db:
             db.complete_job(job_id, error=error_msg)
     finally:
-        with _env_vars_lock:
-            job_env_vars.pop(job_id, None)
+        pass
 
 
 @app.post("/submit")
@@ -113,6 +119,7 @@ async def submit_job(
     background_tasks: BackgroundTasks,
     compute: str,
     gpus: int | None = None,
+    function_name: str | None = None,
     function_code: str = "",
     args: str | None = None,
     kwargs: str | None = None,
@@ -121,17 +128,25 @@ async def submit_job(
     if not db or not scheduler:
         raise HTTPException(status_code=500, detail="Control plane not initialized")
     job_id = str(uuid.uuid4())
-    job = db.create_job(job_id, compute, gpus, function_code, args, kwargs)
-    if env_vars:
-        with _env_vars_lock:
-            job_env_vars[job_id] = env_vars
+    job = db.create_job(job_id, compute, gpus, function_name, function_code, args, kwargs, env_vars)
     available_compute = db.get_available_compute()
     node_ids = scheduler.schedule_job(job, available_compute)
     if not node_ids:
         return {"status": "pending", "job_id": job_id, "message": "No available compute"}
     db.assign_job(job_id, node_ids)
+    ray_node_ids = db.get_ray_node_ids(node_ids)
     background_tasks.add_task(
-        _run_job, job_id, function_code, node_ids, compute, gpus, args, kwargs, env_vars
+        _run_job,
+        job_id,
+        function_code,
+        function_name,
+        node_ids,
+        ray_node_ids,
+        compute,
+        gpus,
+        args,
+        kwargs,
+        env_vars,
     )
     return {"status": "submitted", "job_id": job_id, "node_ids": node_ids}
 
@@ -165,6 +180,7 @@ async def get_status():
                 "gpus": j.gpus,
                 "status": j.status.value,
                 "node_ids": j.node_ids,
+                "function_name": j.function_name,
                 "result": j.result,
                 "error": j.error,
             }
@@ -184,6 +200,7 @@ async def get_job(job_id: str):
         "gpus": job.gpus,
         "status": job.status.value,
         "node_ids": job.node_ids,
+        "function_name": job.function_name,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
@@ -215,13 +232,7 @@ async def get_job_logs(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
 
     def generate():
-        with _logs_lock:
-            logs = job_logs.get(job_id, [])
-        if not logs:
-            yield "No logs available yet.\n"
-        else:
-            for line in logs:
-                yield f"{line}\n"
+        yield from log_store.stream_logs(job_id, _check_db)
 
     return StreamingResponse(generate(), media_type="text/plain")
 
@@ -237,19 +248,20 @@ def _retry_pending_jobs():
         node_ids = scheduler.schedule_job(job, available_compute)
         if node_ids:
             db.assign_job(job.job_id, node_ids)
-            with _env_vars_lock:
-                env_vars = job_env_vars.get(job.job_id)
+            ray_node_ids = db.get_ray_node_ids(node_ids)
             threading.Thread(
                 target=_run_job,
                 args=(
                     job.job_id,
                     job.function_code or "",
+                    job.function_name,
                     node_ids,
+                    ray_node_ids,
                     job.compute,
                     job.gpus,
                     job.args,
                     job.kwargs,
-                    env_vars,
+                    job.env_vars,
                 ),
                 daemon=True,
             ).start()
