@@ -35,17 +35,28 @@ class RayManager:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, message=".*RAY_ACCEL.*")
             try:
-                ray.init(
-                    address=None,
-                    ignore_reinit_error=True,
-                    _node_ip_address=node_ip,
-                    _temp_dir="/tmp/ray",
-                    include_dashboard=False,
-                )
+                try:
+                    ray.init(
+                        address=None,
+                        ignore_reinit_error=True,
+                        _node_ip_address=node_ip,
+                        _temp_dir="/tmp/ray",
+                        include_dashboard=False,
+                        _gcs_server_port=port,
+                    )
+                except TypeError:
+                    ray.init(
+                        address=None,
+                        ignore_reinit_error=True,
+                        _node_ip_address=node_ip,
+                        _temp_dir="/tmp/ray",
+                        include_dashboard=False,
+                    )
             except RuntimeError as e:
                 if "already been initialized" not in str(e).lower():
                     raise
         self.is_running = True
+        self.address = self.get_address()
 
     def stop(self):
         if self.is_running:

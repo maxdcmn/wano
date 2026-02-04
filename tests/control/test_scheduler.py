@@ -30,7 +30,7 @@ def test_gpu_job_multi_node():
     job = Job(job_id="job2", compute="gpu", gpus=3, status=JobStatus.PENDING)
     available = {"gpu": [[{"node_id": "node1"}], [{"node_id": "node1"}], [{"node_id": "node2"}]]}
 
-    assert scheduler.schedule_job(job, available) == ["node1", "node2"]
+    assert scheduler.schedule_job(job, available) == ["node1", "node1", "node2"]
 
 
 def test_gpu_job_insufficient_gpus():

@@ -17,14 +17,32 @@ class NodeAgent:
         self.capabilities: NodeCapabilities | None = None
         self.running = False
 
-    def start(self):
+    def _get_ray_node_id(self) -> str | None:
+        if not ray.is_initialized():
+            return None
+        node_id = getattr(ray.get_runtime_context(), "node_id", None)
+        if not node_id:
+            return None
+        with contextlib.suppress(AttributeError):
+            return node_id.hex()
+        return str(node_id)
+
+    def _refresh_capabilities(self):
         self.capabilities = detect_all()
+        if self.capabilities:
+            self.capabilities.ray_node_id = self._get_ray_node_id()
+
+    def start(self):
+        self._refresh_capabilities()
         if not self.control_plane_url:
             self.control_plane_url = discover_control_plane()
             if not self.control_plane_url:
                 raise RuntimeError("Control plane not found. Start it with 'wano up'")
         self.register_node()
         self.start_ray_worker()
+        if self.capabilities:
+            self.capabilities.ray_node_id = self._get_ray_node_id()
+            self.register_node()
         self.running = True
         self.heartbeat_loop()
 
@@ -61,9 +79,9 @@ class NodeAgent:
     def heartbeat_loop(self):
         while self.running:
             try:
+                self._refresh_capabilities()
                 if not self.capabilities:
                     break
-                self.capabilities = detect_all()
                 requests.post(
                     f"{self.control_plane_url}/heartbeat",
                     json=self.capabilities.to_dict(),

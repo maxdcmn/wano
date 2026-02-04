@@ -19,22 +19,21 @@ class Scheduler:
         if "gpu" not in available_compute:
             return None
         gpus_needed = job.gpus or 1
-        node_gpus: dict[str, list[dict]] = {}
+        node_gpus: dict[str, int] = {}
         for gpu_entry in available_compute["gpu"]:
             if isinstance(gpu_entry, list):
                 node_id = gpu_entry[0].get("node_id") if gpu_entry else None
                 if node_id:
-                    node_gpus.setdefault(node_id, []).extend(gpu_entry)
+                    node_gpus[node_id] = node_gpus.get(node_id, 0) + len(gpu_entry)
             else:
                 node_id = gpu_entry.get("node_id")
                 if node_id:
-                    node_gpus.setdefault(node_id, []).append(gpu_entry)
-        selected_nodes = []
-        gpus_assigned = 0
-        for node_id, gpu_list in node_gpus.items():
-            if gpus_assigned >= gpus_needed:
+                    node_gpus[node_id] = node_gpus.get(node_id, 0) + 1
+        assignments: list[str] = []
+        for node_id, count in node_gpus.items():
+            remaining = gpus_needed - len(assignments)
+            if remaining <= 0:
                 break
-            if node_id not in selected_nodes:
-                selected_nodes.append(node_id)
-            gpus_assigned += len(gpu_list)
-        return selected_nodes if gpus_assigned >= gpus_needed else None
+            assign = min(count, remaining)
+            assignments.extend([node_id] * assign)
+        return assignments if len(assignments) >= gpus_needed else None

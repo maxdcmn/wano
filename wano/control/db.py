@@ -12,13 +12,21 @@ class Database:
         self.db_path = db_path
         self._init_schema()
 
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, column_type: str):
+        cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
     def _init_schema(self):
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript("""
-                CREATE TABLE IF NOT EXISTS nodes (node_id TEXT PRIMARY KEY, last_seen TIMESTAMP, status TEXT);
+                CREATE TABLE IF NOT EXISTS nodes (node_id TEXT PRIMARY KEY, last_seen TIMESTAMP, status TEXT, ray_node_id TEXT);
                 CREATE TABLE IF NOT EXISTS compute (node_id TEXT, type TEXT, spec_json TEXT, PRIMARY KEY (node_id, type), FOREIGN KEY (node_id) REFERENCES nodes(node_id));
-                CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, compute TEXT, gpus INTEGER, status TEXT, node_ids TEXT, created_at TIMESTAMP, started_at TIMESTAMP, completed_at TIMESTAMP, function_code TEXT, error TEXT, result TEXT, args TEXT, kwargs TEXT);
+                CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, compute TEXT, gpus INTEGER, status TEXT, node_ids TEXT, created_at TIMESTAMP, started_at TIMESTAMP, completed_at TIMESTAMP, function_name TEXT, function_code TEXT, error TEXT, result TEXT, args TEXT, kwargs TEXT, env_vars TEXT);
             """)
+            self._ensure_column(conn, "nodes", "ray_node_id", "TEXT")
+            self._ensure_column(conn, "jobs", "function_name", "TEXT")
+            self._ensure_column(conn, "jobs", "env_vars", "TEXT")
             conn.commit()
 
     def _execute(self, query: str, params=()):
@@ -28,9 +36,22 @@ class Database:
 
     def register_node(self, node_id: str, capabilities: NodeCapabilities):
         with sqlite3.connect(self.db_path) as conn:
+            ray_node_id = capabilities.ray_node_id
+            if ray_node_id is None:
+                row = conn.execute(
+                    "SELECT ray_node_id FROM nodes WHERE node_id = ?",
+                    (node_id,),
+                ).fetchone()
+                if row:
+                    ray_node_id = row[0]
             conn.execute(
-                "INSERT OR REPLACE INTO nodes (node_id, last_seen, status) VALUES (?, ?, ?)",
-                (node_id, datetime.now(UTC).isoformat(), "active"),
+                "INSERT OR REPLACE INTO nodes (node_id, last_seen, status, ray_node_id) VALUES (?, ?, ?, ?)",
+                (
+                    node_id,
+                    datetime.now(UTC).isoformat(),
+                    "active",
+                    ray_node_id,
+                ),
             )
             for compute_type, spec in capabilities.compute.items():
                 if compute_type == "gpu" and isinstance(spec, list):
@@ -111,23 +132,27 @@ class Database:
         job_id: str,
         compute: str,
         gpus: int | None,
+        function_name: str | None,
         function_code: str,
         args: str | None = None,
         kwargs: str | None = None,
+        env_vars: str | None = None,
     ) -> Job:
         now = datetime.now(UTC)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO jobs (job_id, compute, gpus, status, created_at, function_code, args, kwargs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs (job_id, compute, gpus, status, created_at, function_name, function_code, args, kwargs, env_vars) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job_id,
                     compute,
                     gpus,
                     JobStatus.PENDING.value,
                     now.isoformat(),
+                    function_name,
                     function_code,
                     args,
                     kwargs,
+                    env_vars,
                 ),
             )
             conn.commit()
@@ -137,9 +162,11 @@ class Database:
             gpus=gpus,
             status=JobStatus.PENDING,
             created_at=now,
+            function_name=function_name,
             function_code=function_code,
             args=args,
             kwargs=kwargs,
+            env_vars=env_vars,
         )
 
     def assign_job(self, job_id: str, node_ids: list[str]):
@@ -170,17 +197,19 @@ class Database:
             created_at=datetime.fromisoformat(row[5]) if row[5] else None,
             started_at=datetime.fromisoformat(row[6]) if row[6] else None,
             completed_at=datetime.fromisoformat(row[7]) if row[7] else None,
-            function_code=row[8],
-            error=row[9],
-            result=row[10],
-            args=row[11],
-            kwargs=row[12],
+            function_name=row[8],
+            function_code=row[9],
+            error=row[10],
+            result=row[11],
+            args=row[12],
+            kwargs=row[13],
+            env_vars=row[14],
         )
 
     def get_job(self, job_id: str) -> Job | None:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error, result, args, kwargs FROM jobs WHERE job_id = ?",
+                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars FROM jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
         return self._row_to_job(row) if row else None
@@ -188,14 +217,14 @@ class Database:
     def get_all_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error, result, args, kwargs FROM jobs ORDER BY created_at DESC"
+                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars FROM jobs ORDER BY created_at DESC"
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
     def get_pending_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_code, error, result, args, kwargs FROM jobs WHERE status = ? ORDER BY created_at ASC",
+                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars FROM jobs WHERE status = ? ORDER BY created_at ASC",
                 (JobStatus.PENDING.value,),
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
@@ -205,3 +234,17 @@ class Database:
             "UPDATE jobs SET status = ?, completed_at = ? WHERE job_id = ?",
             (JobStatus.CANCELLED.value, datetime.now(UTC).isoformat(), job_id),
         )
+
+    def get_ray_node_ids(self, node_ids: list[str]) -> list[str | None]:
+        if not node_ids:
+            return []
+        distinct = sorted(set(node_ids))
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT node_id, ray_node_id FROM nodes WHERE node_id IN ({})".format(
+                    ",".join(["?"] * len(distinct))
+                ),
+                distinct,
+            ).fetchall()
+        mapping = {node_id: ray_node_id for node_id, ray_node_id in rows}
+        return [mapping.get(node_id) for node_id in node_ids]

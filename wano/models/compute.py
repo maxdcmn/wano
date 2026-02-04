@@ -28,9 +28,12 @@ class CPUSpec:
 class NodeCapabilities:
     node_id: str
     compute: dict[str, list[GPUSpec] | CPUSpec]
+    ray_node_id: str | None = None
 
     def to_dict(self) -> dict:
         result: dict = {"node_id": self.node_id, "compute": {}}
+        if self.ray_node_id:
+            result["ray_node_id"] = self.ray_node_id
         if "gpu" in self.compute and isinstance(self.compute["gpu"], list):
             result["compute"]["gpu"] = [
                 {
@@ -86,4 +89,8 @@ class NodeCapabilities:
                 utilization_percent=c.get("utilization_percent"),
                 memory_used_mib=c.get("memory_used_mib"),
             )
-        return cls(node_id=data["node_id"], compute=compute)
+        return cls(
+            node_id=data["node_id"],
+            compute=compute,
+            ray_node_id=data.get("ray_node_id"),
+        )
