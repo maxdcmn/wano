@@ -187,6 +187,7 @@ async def get_status():
     return {
         "compute": db_instance.get_available_compute(),
         "active_nodes": db_instance.get_active_nodes(),
+        "nodes": db_instance.get_nodes(),
         "jobs": [
             {
                 "job_id": j.job_id,
@@ -204,6 +205,20 @@ async def get_status():
             for j in jobs
         ],
     }
+
+
+@app.post("/nodes/{node_id}/cordon")
+async def cordon_node(node_id: str):
+    if not _check_db().set_node_status(node_id, "cordoned"):
+        raise HTTPException(status_code=404, detail="Node not found")
+    return {"status": "cordoned", "node_id": node_id}
+
+
+@app.post("/nodes/{node_id}/uncordon")
+async def uncordon_node(node_id: str):
+    if not _check_db().set_node_status(node_id, "active"):
+        raise HTTPException(status_code=404, detail="Node not found")
+    return {"status": "active", "node_id": node_id}
 
 
 @app.get("/jobs/{job_id}")

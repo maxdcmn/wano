@@ -131,3 +131,14 @@ def test_get_node_usage(db):
     db.assign_job("job1", ["node1"])
     usage = db.get_node_usage()
     assert usage["node1"]["cpu"] == 1
+
+
+def test_cordoned_node_remains_cordoned(db):
+    capabilities = NodeCapabilities(
+        node_id="node1", compute={"cpu": CPUSpec(cores=8, memory_gb=16)}
+    )
+    db.register_node("node1", capabilities)
+    assert db.set_node_status("node1", "cordoned")
+    db.register_node("node1", capabilities)
+    nodes = {n["node_id"]: n["status"] for n in db.get_nodes()}
+    assert nodes["node1"] == "cordoned"

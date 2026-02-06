@@ -407,7 +407,16 @@ def status(control_plane_url: str):
         jobs = data.get("jobs", [])
         current_hostname = socket.gethostname()
         active_nodes = set(data.get("active_nodes", []))
-        is_joined = current_hostname in active_nodes
+        nodes = data.get("nodes", [])
+        node_status = None
+        for node in nodes:
+            if node.get("node_id") == current_hostname:
+                node_status = node.get("status")
+                break
+        if node_status and node_status != "active":
+            joined_label = f"Yes ({node_status})"
+        else:
+            joined_label = "Yes" if current_hostname in active_nodes else "No"
         compute = data.get("compute", {})
         real_time_cpu = _get_real_time_cpu_usage()
         real_time_gpus = _get_real_time_gpu_usage()
@@ -501,7 +510,7 @@ def status(control_plane_url: str):
         click.echo(datetime.now().strftime("%a %b %d %H:%M:%S %Y"))
         click.echo("+" + "-" * header_width + "+")
         header_line1 = f"Wano {wano.__version__}"
-        header_line2 = f"Node Joined: {'Yes' if is_joined else 'No'}"
+        header_line2 = f"Node Joined: {joined_label}"
         remaining_width = header_width - len(header_line1) - 5
         click.echo(f"| {header_line1:<{len(header_line1)}} | {header_line2:<{remaining_width}} |")
         click.echo(sep_border)
@@ -639,6 +648,36 @@ def job(job_id: str, control_plane_url: str):
     if data.get("result") is not None:
         click.echo("\nResult:")
         click.echo(_format_job_result(data.get("result")))
+
+
+@cli.command()
+@click.argument("node_id")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def cordon(node_id: str, control_plane_url: str):
+    try:
+        response = requests.post(f"{control_plane_url}/nodes/{node_id}/cordon", timeout=5)
+        if response.status_code == 404:
+            click.echo(f"Error: Node {node_id} not found", err=True)
+            sys.exit(1)
+        response.raise_for_status()
+        click.echo(f"Cordoned {node_id}")
+    except requests.exceptions.RequestException as e:
+        _handle_connection_error(e, control_plane_url)
+
+
+@cli.command()
+@click.argument("node_id")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def uncordon(node_id: str, control_plane_url: str):
+    try:
+        response = requests.post(f"{control_plane_url}/nodes/{node_id}/uncordon", timeout=5)
+        if response.status_code == 404:
+            click.echo(f"Error: Node {node_id} not found", err=True)
+            sys.exit(1)
+        response.raise_for_status()
+        click.echo(f"Uncordoned {node_id}")
+    except requests.exceptions.RequestException as e:
+        _handle_connection_error(e, control_plane_url)
 
 
 @cli.command()

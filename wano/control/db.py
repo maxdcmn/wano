@@ -39,20 +39,20 @@ class Database:
 
     def register_node(self, node_id: str, capabilities: NodeCapabilities):
         with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT status, ray_node_id FROM nodes WHERE node_id = ?",
+                (node_id,),
+            ).fetchone()
+            status = row[0] if row and row[0] and row[0] != "active" else "active"
             ray_node_id = capabilities.ray_node_id
-            if ray_node_id is None:
-                row = conn.execute(
-                    "SELECT ray_node_id FROM nodes WHERE node_id = ?",
-                    (node_id,),
-                ).fetchone()
-                if row:
-                    ray_node_id = row[0]
+            if ray_node_id is None and row:
+                ray_node_id = row[1]
             conn.execute(
                 "INSERT OR REPLACE INTO nodes (node_id, last_seen, status, ray_node_id) VALUES (?, ?, ?, ?)",
                 (
                     node_id,
                     datetime.now(UTC).isoformat(),
-                    "active",
+                    status,
                     ray_node_id,
                 ),
             )
@@ -111,6 +111,36 @@ class Database:
                 ).fetchall()
             ]
         return active
+
+    def set_node_status(self, node_id: str, status: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM nodes WHERE node_id = ?",
+                (node_id,),
+            ).fetchone()
+            if not row:
+                return False
+            conn.execute(
+                "UPDATE nodes SET status = ? WHERE node_id = ?",
+                (status, node_id),
+            )
+            conn.commit()
+        return True
+
+    def get_nodes(self) -> list[dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT node_id, last_seen, status, ray_node_id FROM nodes"
+            ).fetchall()
+        return [
+            {
+                "node_id": row[0],
+                "last_seen": row[1],
+                "status": row[2],
+                "ray_node_id": row[3],
+            }
+            for row in rows
+        ]
 
     def get_available_compute(self, heartbeat_timeout_seconds: int = 30) -> dict[str, list[dict]]:
         cutoff = datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)
