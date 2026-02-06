@@ -23,6 +23,8 @@ def submit_job(
     args: list | None = None,
     kwargs: dict | None = None,
     env_vars: dict | None = None,
+    priority: int = 0,
+    max_retries: int = 0,
 ) -> str:
     function_code_bytes = get_function_code(function_name)
     if not function_code_bytes:
@@ -32,6 +34,8 @@ def submit_job(
         "gpus": gpus,
         "function_name": function_name,
         "function_code": base64.b64encode(function_code_bytes).decode("utf-8"),
+        "priority": priority,
+        "max_retries": max_retries,
     }
     if args is not None:
         payload["args"] = json.dumps(args)

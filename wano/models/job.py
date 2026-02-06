@@ -18,6 +18,9 @@ class Job:
     gpus: int | None = None
     status: JobStatus = JobStatus.PENDING
     node_ids: list[str] | None = None
+    priority: int = 0
+    max_retries: int = 0
+    attempts: int = 0
     created_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None

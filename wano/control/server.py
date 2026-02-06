@@ -119,6 +119,8 @@ async def submit_job(
     background_tasks: BackgroundTasks,
     compute: str,
     gpus: int | None = None,
+    priority: int = 0,
+    max_retries: int = 0,
     function_name: str | None = None,
     function_code: str = "",
     args: str | None = None,
@@ -128,7 +130,18 @@ async def submit_job(
     if not db or not scheduler:
         raise HTTPException(status_code=500, detail="Control plane not initialized")
     job_id = str(uuid.uuid4())
-    job = db.create_job(job_id, compute, gpus, function_name, function_code, args, kwargs, env_vars)
+    job = db.create_job(
+        job_id,
+        compute,
+        gpus,
+        function_name,
+        function_code,
+        args,
+        kwargs,
+        env_vars,
+        priority=priority,
+        max_retries=max_retries,
+    )
     available_compute = db.get_available_compute()
     node_ids = scheduler.schedule_job(job, available_compute)
     if not node_ids:
@@ -181,6 +194,9 @@ async def get_status():
                 "status": j.status.value,
                 "node_ids": j.node_ids,
                 "function_name": j.function_name,
+                "priority": j.priority,
+                "max_retries": j.max_retries,
+                "attempts": j.attempts,
                 "result": j.result,
                 "error": j.error,
             }
@@ -200,6 +216,9 @@ async def get_job(job_id: str):
         "gpus": job.gpus,
         "status": job.status.value,
         "node_ids": job.node_ids,
+        "priority": job.priority,
+        "max_retries": job.max_retries,
+        "attempts": job.attempts,
         "function_name": job.function_name,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,

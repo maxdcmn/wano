@@ -22,11 +22,14 @@ class Database:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS nodes (node_id TEXT PRIMARY KEY, last_seen TIMESTAMP, status TEXT, ray_node_id TEXT);
                 CREATE TABLE IF NOT EXISTS compute (node_id TEXT, type TEXT, spec_json TEXT, PRIMARY KEY (node_id, type), FOREIGN KEY (node_id) REFERENCES nodes(node_id));
-                CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, compute TEXT, gpus INTEGER, status TEXT, node_ids TEXT, created_at TIMESTAMP, started_at TIMESTAMP, completed_at TIMESTAMP, function_name TEXT, function_code TEXT, error TEXT, result TEXT, args TEXT, kwargs TEXT, env_vars TEXT);
+                CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, compute TEXT, gpus INTEGER, status TEXT, node_ids TEXT, priority INTEGER DEFAULT 0, max_retries INTEGER DEFAULT 0, attempts INTEGER DEFAULT 0, created_at TIMESTAMP, started_at TIMESTAMP, completed_at TIMESTAMP, function_name TEXT, function_code TEXT, error TEXT, result TEXT, args TEXT, kwargs TEXT, env_vars TEXT);
             """)
             self._ensure_column(conn, "nodes", "ray_node_id", "TEXT")
             self._ensure_column(conn, "jobs", "function_name", "TEXT")
             self._ensure_column(conn, "jobs", "env_vars", "TEXT")
+            self._ensure_column(conn, "jobs", "priority", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "jobs", "max_retries", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "jobs", "attempts", "INTEGER DEFAULT 0")
             conn.commit()
 
     def _execute(self, query: str, params=()):
@@ -137,16 +140,21 @@ class Database:
         args: str | None = None,
         kwargs: str | None = None,
         env_vars: str | None = None,
+        priority: int = 0,
+        max_retries: int = 0,
     ) -> Job:
         now = datetime.now(UTC)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO jobs (job_id, compute, gpus, status, created_at, function_name, function_code, args, kwargs, env_vars) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs (job_id, compute, gpus, status, priority, max_retries, attempts, created_at, function_name, function_code, args, kwargs, env_vars) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job_id,
                     compute,
                     gpus,
                     JobStatus.PENDING.value,
+                    priority,
+                    max_retries,
+                    0,
                     now.isoformat(),
                     function_name,
                     function_code,
@@ -161,6 +169,9 @@ class Database:
             compute=compute,
             gpus=gpus,
             status=JobStatus.PENDING,
+            priority=priority,
+            max_retries=max_retries,
+            attempts=0,
             created_at=now,
             function_name=function_name,
             function_code=function_code,
@@ -171,11 +182,32 @@ class Database:
 
     def assign_job(self, job_id: str, node_ids: list[str]):
         self._execute(
-            "UPDATE jobs SET node_ids = ?, status = ?, started_at = ? WHERE job_id = ?",
-            (json.dumps(node_ids), JobStatus.RUNNING.value, datetime.now(UTC).isoformat(), job_id),
+            "UPDATE jobs SET node_ids = ?, status = ?, started_at = ?, attempts = COALESCE(attempts, 0) + 1 WHERE job_id = ?",
+            (
+                json.dumps(node_ids),
+                JobStatus.RUNNING.value,
+                datetime.now(UTC).isoformat(),
+                job_id,
+            ),
         )
 
     def complete_job(self, job_id: str, error: str | None = None, result: str | None = None):
+        if error:
+            job = self.get_job(job_id)
+            if job and job.attempts <= job.max_retries:
+                self._execute(
+                    "UPDATE jobs SET status = ?, node_ids = ?, started_at = ?, completed_at = ?, error = ?, result = ? WHERE job_id = ?",
+                    (
+                        JobStatus.PENDING.value,
+                        None,
+                        None,
+                        None,
+                        error,
+                        None,
+                        job_id,
+                    ),
+                )
+                return
         self._execute(
             "UPDATE jobs SET status = ?, completed_at = ?, error = ?, result = ? WHERE job_id = ?",
             (
@@ -194,22 +226,25 @@ class Database:
             gpus=row[2],
             status=JobStatus(row[3]),
             node_ids=json.loads(row[4]) if row[4] else None,
-            created_at=datetime.fromisoformat(row[5]) if row[5] else None,
-            started_at=datetime.fromisoformat(row[6]) if row[6] else None,
-            completed_at=datetime.fromisoformat(row[7]) if row[7] else None,
-            function_name=row[8],
-            function_code=row[9],
-            error=row[10],
-            result=row[11],
-            args=row[12],
-            kwargs=row[13],
-            env_vars=row[14],
+            priority=row[5] if row[5] is not None else 0,
+            max_retries=row[6] if row[6] is not None else 0,
+            attempts=row[7] if row[7] is not None else 0,
+            created_at=datetime.fromisoformat(row[8]) if row[8] else None,
+            started_at=datetime.fromisoformat(row[9]) if row[9] else None,
+            completed_at=datetime.fromisoformat(row[10]) if row[10] else None,
+            function_name=row[11],
+            function_code=row[12],
+            error=row[13],
+            result=row[14],
+            args=row[15],
+            kwargs=row[16],
+            env_vars=row[17],
         )
 
     def get_job(self, job_id: str) -> Job | None:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars FROM jobs WHERE job_id = ?",
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars FROM jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
         return self._row_to_job(row) if row else None
@@ -217,14 +252,14 @@ class Database:
     def get_all_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars FROM jobs ORDER BY created_at DESC"
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars FROM jobs ORDER BY created_at DESC"
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
     def get_pending_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars FROM jobs WHERE status = ? ORDER BY created_at ASC",
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC",
                 (JobStatus.PENDING.value,),
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
@@ -246,5 +281,5 @@ class Database:
                 ),
                 distinct,
             ).fetchall()
-        mapping = {node_id: ray_node_id for node_id, ray_node_id in rows}
+        mapping = dict(rows)
         return [mapping.get(node_id) for node_id in node_ids]

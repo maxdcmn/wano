@@ -132,6 +132,8 @@ def join(control_plane_url: str):
 @click.option("--args", help="JSON array of positional args")
 @click.option("--kwargs", help="JSON object of keyword args")
 @click.option("--env", multiple=True, help="Environment variable (format: KEY=VALUE)")
+@click.option("--priority", type=int, default=0, show_default=True)
+@click.option("--retries", type=int, default=0, show_default=True)
 @click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
 def run(
     script: str,
@@ -141,6 +143,8 @@ def run(
     args: str | None,
     kwargs: str | None,
     env: tuple[str, ...],
+    priority: int,
+    retries: int,
     control_plane_url: str,
 ):
     script_path = Path(script)
@@ -184,6 +188,8 @@ def run(
         "function_name": function_name,
         "function_code": base64.b64encode(script_path.read_text().encode()).decode(),
         "env_vars": json.dumps(env_vars) if env_vars else None,
+        "priority": priority,
+        "max_retries": retries,
     }
     if parsed_args is not None:
         payload["args"] = json.dumps(parsed_args)
@@ -366,6 +372,16 @@ def _format_power(usage: int | float | None, cap: int | float | None = None) -> 
 
 def _format_temp(temp: float | None) -> str:
     return f"{temp:.0f}°C" if temp is not None else "N/A"
+
+
+def _format_job_result(value: str | None) -> str:
+    if value is None:
+        return "None"
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return json.dumps(parsed, indent=2, sort_keys=True)
 
 
 def _handle_connection_error(e: requests.exceptions.RequestException, control_plane_url: str):
@@ -581,6 +597,48 @@ def logs(job_id: str, control_plane_url: str):
         stream_logs(job_id, control_plane_url)
     except requests.exceptions.RequestException as e:
         _handle_connection_error(e, control_plane_url)
+
+
+@cli.command()
+@click.argument("job_id")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def job(job_id: str, control_plane_url: str):
+    try:
+        response = requests.get(f"{control_plane_url}/jobs/{job_id}", timeout=5)
+        if response.status_code == 404:
+            click.echo(f"Error: Job {job_id} not found", err=True)
+            sys.exit(1)
+        response.raise_for_status()
+        data = response.json()
+    except requests.exceptions.RequestException as e:
+        _handle_connection_error(e, control_plane_url)
+        return
+
+    compute = data.get("compute")
+    gpus = data.get("gpus")
+    resources = f"{compute} ({gpus} GPUs)" if compute == "gpu" and gpus else compute
+    node_ids = data.get("node_ids") or []
+    nodes_str = ", ".join(node_ids) if isinstance(node_ids, list) else str(node_ids)
+
+    click.echo(f"Job ID: {data.get('job_id')}")
+    click.echo(f"Status: {data.get('status')}")
+    click.echo(f"Resources: {resources}")
+    click.echo(f"Priority: {data.get('priority', 0)}")
+    click.echo(f"Attempts: {data.get('attempts', 0)} / {data.get('max_retries', 0)}")
+    click.echo(f"Nodes: {nodes_str if nodes_str else '-'}")
+    click.echo(f"Function: {data.get('function_name') or '-'}")
+    click.echo(f"Created: {data.get('created_at') or '-'}")
+    click.echo(f"Started: {data.get('started_at') or '-'}")
+    click.echo(f"Completed: {data.get('completed_at') or '-'}")
+
+    error = data.get("error")
+    if error:
+        click.echo("\nError:")
+        click.echo(error)
+
+    if data.get("result") is not None:
+        click.echo("\nResult:")
+        click.echo(_format_job_result(data.get("result")))
 
 
 @cli.command()

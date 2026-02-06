@@ -80,6 +80,37 @@ def test_get_pending_jobs(db):
     assert pending[0].status == JobStatus.PENDING
 
 
+def test_job_priority_ordering(db):
+    db.create_job("job1", "cpu", None, None, "def f(): pass", priority=0)
+    db.create_job("job2", "cpu", None, None, "def f(): pass", priority=5)
+    pending = db.get_pending_jobs()
+    assert pending[0].job_id == "job2"
+
+
+def test_attempts_increment(db):
+    db.create_job("job1", "cpu", None, None, "def f(): pass")
+    db.assign_job("job1", ["node1"])
+    job = db.get_job("job1")
+    assert job.attempts == 1
+
+
+def test_job_retries_when_allowed(db):
+    db.create_job("job1", "cpu", None, None, "def f(): pass", max_retries=1)
+    db.assign_job("job1", ["node1"])
+    db.complete_job("job1", "error")
+    job = db.get_job("job1")
+    assert job.status == JobStatus.PENDING
+    assert job.attempts == 1
+
+
+def test_job_fails_after_retries_exhausted(db):
+    db.create_job("job1", "cpu", None, None, "def f(): pass", max_retries=0)
+    db.assign_job("job1", ["node1"])
+    db.complete_job("job1", "error")
+    job = db.get_job("job1")
+    assert job.status == JobStatus.FAILED
+
+
 def test_cancel_job(db):
     job = db.create_job("job1", "cpu", None, None, "def f(): pass")
     db.assign_job("job1", ["node1"])
