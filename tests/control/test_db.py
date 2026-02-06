@@ -124,3 +124,10 @@ def test_job_env_vars_persisted(db):
     db.create_job("job-env", "cpu", None, None, "def f(): pass", env_vars=env_vars)
     job = db.get_job("job-env")
     assert job.env_vars == env_vars
+
+
+def test_get_node_usage(db):
+    db.create_job("job1", "cpu", None, None, "def f(): pass")
+    db.assign_job("job1", ["node1"])
+    usage = db.get_node_usage()
+    assert usage["node1"]["cpu"] == 1

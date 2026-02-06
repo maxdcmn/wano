@@ -5,7 +5,7 @@ from wano.models.job import Job, JobStatus
 def test_cpu_job_with_available_compute():
     scheduler = Scheduler()
     job = Job(job_id="job1", compute="cpu", status=JobStatus.PENDING)
-    available = {"cpu": [{"node_id": "node1"}]}
+    available = {"cpu": [{"node_id": "node1", "cores": 4}]}
 
     assert scheduler.schedule_job(job, available) == ["node1"]
 
@@ -47,3 +47,26 @@ def test_gpu_job_defaults_to_one():
     available = {"gpu": [[{"node_id": "node1"}]]}
 
     assert scheduler.schedule_job(job, available) == ["node1"]
+
+
+def test_cpu_job_respects_usage():
+    scheduler = Scheduler()
+    job = Job(job_id="job5", compute="cpu", status=JobStatus.PENDING)
+    available = {
+        "cpu": [
+            {"node_id": "node1", "cores": 2},
+            {"node_id": "node2", "cores": 1},
+        ]
+    }
+    usage = {"node1": {"cpu": 2, "gpu": 0}, "node2": {"cpu": 0, "gpu": 0}}
+
+    assert scheduler.schedule_job(job, available, usage) == ["node2"]
+
+
+def test_gpu_job_respects_usage():
+    scheduler = Scheduler()
+    job = Job(job_id="job6", compute="gpu", gpus=1, status=JobStatus.PENDING)
+    available = {"gpu": [[{"node_id": "node1"}, {"node_id": "node1"}], [{"node_id": "node2"}]]}
+    usage = {"node1": {"cpu": 0, "gpu": 2}, "node2": {"cpu": 0, "gpu": 0}}
+
+    assert scheduler.schedule_job(job, available, usage) == ["node2"]

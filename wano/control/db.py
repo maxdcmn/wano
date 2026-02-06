@@ -130,6 +130,28 @@ class Database:
                 result.setdefault(compute_type, []).append(spec)
         return result
 
+    def get_node_usage(self) -> dict[str, dict[str, int]]:
+        usage: dict[str, dict[str, int]] = {}
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT node_ids, compute FROM jobs WHERE status = ?",
+                (JobStatus.RUNNING.value,),
+            ).fetchall()
+        for node_ids_raw, compute in rows:
+            if not node_ids_raw:
+                continue
+            try:
+                node_ids = json.loads(node_ids_raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(node_ids, list):
+                continue
+            key = "gpu" if compute == "gpu" else "cpu"
+            for node_id in node_ids:
+                usage.setdefault(node_id, {"cpu": 0, "gpu": 0})
+                usage[node_id][key] += 1
+        return usage
+
     def create_job(
         self,
         job_id: str,

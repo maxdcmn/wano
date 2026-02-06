@@ -143,7 +143,8 @@ async def submit_job(
         max_retries=max_retries,
     )
     available_compute = db.get_available_compute()
-    node_ids = scheduler.schedule_job(job, available_compute)
+    node_usage = db.get_node_usage()
+    node_ids = scheduler.schedule_job(job, available_compute, node_usage)
     if not node_ids:
         return {"status": "pending", "job_id": job_id, "message": "No available compute"}
     db.assign_job(job_id, node_ids)
@@ -263,8 +264,9 @@ def _retry_pending_jobs():
     if not pending_jobs:
         return
     available_compute = db.get_available_compute()
+    node_usage = db.get_node_usage()
     for job in pending_jobs:
-        node_ids = scheduler.schedule_job(job, available_compute)
+        node_ids = scheduler.schedule_job(job, available_compute, node_usage)
         if node_ids:
             db.assign_job(job.job_id, node_ids)
             ray_node_ids = db.get_ray_node_ids(node_ids)
