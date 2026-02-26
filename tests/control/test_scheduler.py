@@ -70,3 +70,41 @@ def test_gpu_job_respects_usage():
     usage = {"node1": {"cpu": 0, "gpu": 2}, "node2": {"cpu": 0, "gpu": 0}}
 
     assert scheduler.schedule_job(job, available, usage) == ["node2"]
+
+
+def test_cpu_job_with_matching_label():
+    scheduler = Scheduler()
+    job = Job(job_id="job7", compute="cpu", status=JobStatus.PENDING, node_selector={"rack": "A"})
+    available = {"cpu": [{"node_id": "node1", "cores": 4}]}
+    labels = {"node1": {"rack": "A"}}
+    assert scheduler.schedule_job(job, available, node_labels=labels) == ["node1"]
+
+
+def test_cpu_job_with_non_matching_label():
+    scheduler = Scheduler()
+    job = Job(job_id="job8", compute="cpu", status=JobStatus.PENDING, node_selector={"rack": "B"})
+    available = {"cpu": [{"node_id": "node1", "cores": 4}]}
+    labels = {"node1": {"rack": "A"}}
+    assert scheduler.schedule_job(job, available, node_labels=labels) is None
+
+
+def test_gpu_job_with_label_filter():
+    scheduler = Scheduler()
+    job = Job(
+        job_id="job9",
+        compute="gpu",
+        gpus=1,
+        status=JobStatus.PENDING,
+        node_selector={"env": "prod"},
+    )
+    available = {"gpu": [[{"node_id": "node1"}], [{"node_id": "node2"}]]}
+    labels = {"node2": {"env": "prod"}}
+    assert scheduler.schedule_job(job, available, node_labels=labels) == ["node2"]
+
+
+def test_job_without_selector_ignores_labels():
+    scheduler = Scheduler()
+    job = Job(job_id="job10", compute="cpu", status=JobStatus.PENDING)
+    available = {"cpu": [{"node_id": "node1", "cores": 4}]}
+    labels = {"node1": {"rack": "A"}}
+    assert scheduler.schedule_job(job, available, node_labels=labels) == ["node1"]

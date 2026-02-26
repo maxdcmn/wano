@@ -268,3 +268,26 @@ def test_cordoned_node_remains_cordoned(db):
     db.register_node("node1", capabilities)
     nodes = {n["node_id"]: n["status"] for n in db.get_nodes()}
     assert nodes["node1"] == "cordoned"
+
+
+def test_node_labels_persisted(db):
+    capabilities = NodeCapabilities(
+        node_id="node1",
+        compute={"cpu": CPUSpec(cores=4, memory_gb=8)},
+        labels={"rack": "A", "env": "prod"},
+    )
+    db.register_node("node1", capabilities)
+    labels = db.get_node_labels()
+    assert labels["node1"] == {"rack": "A", "env": "prod"}
+
+
+def test_job_node_selector_persisted(db):
+    db.create_job("job-sel", "cpu", None, None, "def f(): pass", node_selector={"rack": "A"})
+    job = db.get_job("job-sel")
+    assert job.node_selector == {"rack": "A"}
+
+
+def test_job_node_selector_none_by_default(db):
+    db.create_job("job-no-sel", "cpu", None, None, "def f(): pass")
+    job = db.get_job("job-no-sel")
+    assert job.node_selector is None

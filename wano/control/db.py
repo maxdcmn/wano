@@ -32,6 +32,8 @@ class Database:
             self._ensure_column(conn, "jobs", "attempts", "INTEGER DEFAULT 0")
             self._ensure_column(conn, "jobs", "timeout_seconds", "INTEGER")
             self._ensure_column(conn, "jobs", "depends_on", "TEXT")
+            self._ensure_column(conn, "nodes", "labels", "TEXT")
+            self._ensure_column(conn, "jobs", "node_selector", "TEXT")
             conn.commit()
 
     def _execute(self, query: str, params=()):
@@ -42,20 +44,26 @@ class Database:
     def register_node(self, node_id: str, capabilities: NodeCapabilities):
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT status, ray_node_id FROM nodes WHERE node_id = ?",
+                "SELECT status, ray_node_id, labels FROM nodes WHERE node_id = ?",
                 (node_id,),
             ).fetchone()
             status = row[0] if row and row[0] and row[0] != "active" else "active"
             ray_node_id = capabilities.ray_node_id
             if ray_node_id is None and row:
                 ray_node_id = row[1]
+            labels_json = (
+                json.dumps(capabilities.labels)
+                if capabilities.labels
+                else (row[2] if row else None)
+            )
             conn.execute(
-                "INSERT OR REPLACE INTO nodes (node_id, last_seen, status, ray_node_id) VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO nodes (node_id, last_seen, status, ray_node_id, labels) VALUES (?, ?, ?, ?, ?)",
                 (
                     node_id,
                     datetime.now(UTC).isoformat(),
                     status,
                     ray_node_id,
+                    labels_json,
                 ),
             )
             for compute_type, spec in capabilities.compute.items():
@@ -132,7 +140,7 @@ class Database:
     def get_nodes(self) -> list[dict]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT node_id, last_seen, status, ray_node_id FROM nodes"
+                "SELECT node_id, last_seen, status, ray_node_id, labels FROM nodes"
             ).fetchall()
         return [
             {
@@ -140,9 +148,17 @@ class Database:
                 "last_seen": row[1],
                 "status": row[2],
                 "ray_node_id": row[3],
+                "labels": json.loads(row[4]) if row[4] else None,
             }
             for row in rows
         ]
+
+    def get_node_labels(self) -> dict[str, dict[str, str]]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT node_id, labels FROM nodes WHERE labels IS NOT NULL"
+            ).fetchall()
+        return {row[0]: json.loads(row[1]) for row in rows}
 
     def get_available_compute(self, heartbeat_timeout_seconds: int = 30) -> dict[str, list[dict]]:
         cutoff = datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)
@@ -198,11 +214,12 @@ class Database:
         max_retries: int = 0,
         timeout_seconds: int | None = None,
         depends_on: list[str] | None = None,
+        node_selector: dict[str, str] | None = None,
     ) -> Job:
         now = datetime.now(UTC)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO jobs (job_id, compute, gpus, status, priority, max_retries, attempts, created_at, function_name, function_code, args, kwargs, env_vars, timeout_seconds, depends_on) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs (job_id, compute, gpus, status, priority, max_retries, attempts, created_at, function_name, function_code, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job_id,
                     compute,
@@ -219,6 +236,7 @@ class Database:
                     env_vars,
                     timeout_seconds,
                     json.dumps(depends_on) if depends_on else None,
+                    json.dumps(node_selector) if node_selector else None,
                 ),
             )
             conn.commit()
@@ -238,6 +256,7 @@ class Database:
             env_vars=env_vars,
             timeout_seconds=timeout_seconds,
             depends_on=depends_on,
+            node_selector=node_selector,
         )
 
     def assign_job(self, job_id: str, node_ids: list[str]):
@@ -301,12 +320,13 @@ class Database:
             env_vars=row[17],
             timeout_seconds=row[18] if len(row) > 18 else None,
             depends_on=json.loads(row[19]) if len(row) > 19 and row[19] else None,
+            node_selector=json.loads(row[20]) if len(row) > 20 and row[20] else None,
         )
 
     def get_job(self, job_id: str) -> Job | None:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on FROM jobs WHERE job_id = ?",
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector FROM jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
         return self._row_to_job(row) if row else None
@@ -314,14 +334,14 @@ class Database:
     def get_all_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on FROM jobs ORDER BY created_at DESC"
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector FROM jobs ORDER BY created_at DESC"
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
     def get_pending_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC",
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC",
                 (JobStatus.PENDING.value,),
             ).fetchall()
         jobs = [self._row_to_job(row) for row in rows]
@@ -346,7 +366,7 @@ class Database:
     def get_running_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on FROM jobs WHERE status = ?",
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector FROM jobs WHERE status = ?",
                 (JobStatus.RUNNING.value,),
             ).fetchall()
         return [self._row_to_job(row) for row in rows]

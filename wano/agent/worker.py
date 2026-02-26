@@ -12,8 +12,9 @@ from wano.models.compute import NodeCapabilities
 
 
 class NodeAgent:
-    def __init__(self, control_plane_url: str | None = None):
+    def __init__(self, control_plane_url: str | None = None, labels: dict[str, str] | None = None):
         self.control_plane_url = control_plane_url
+        self.labels = labels
         self.capabilities: NodeCapabilities | None = None
         self.running = False
 
@@ -31,6 +32,8 @@ class NodeAgent:
         self.capabilities = detect_all()
         if self.capabilities:
             self.capabilities.ray_node_id = self._get_ray_node_id()
+            if self.labels:
+                self.capabilities.labels = self.labels
 
     def start(self):
         self._refresh_capabilities()

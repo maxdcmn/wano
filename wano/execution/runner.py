@@ -27,6 +27,7 @@ def submit_job(
     max_retries: int = 0,
     timeout_seconds: int | None = None,
     depends_on: list[str] | None = None,
+    node_selector: dict[str, str] | None = None,
 ) -> str:
     function_code_bytes = get_function_code(function_name)
     if not function_code_bytes:
@@ -43,6 +44,8 @@ def submit_job(
         payload["timeout_seconds"] = timeout_seconds
     if depends_on:
         payload["depends_on"] = depends_on
+    if node_selector:
+        payload["node_selector"] = node_selector
     if args is not None:
         payload["args"] = json.dumps(args)
     if kwargs is not None:

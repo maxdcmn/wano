@@ -9,12 +9,42 @@ class Scheduler:
         job: Job,
         available_compute: dict[str, list[Any]],
         node_usage: dict[str, dict[str, int]] | None = None,
+        node_labels: dict[str, dict[str, str]] | None = None,
     ) -> list[str] | None:
+        compute = available_compute
+        if job.node_selector:
+            compute = self._filter_by_labels(compute, job.node_selector, node_labels or {})
         if job.compute == "cpu":
-            return self._schedule_cpu_job(available_compute, node_usage or {})
+            return self._schedule_cpu_job(compute, node_usage or {})
         elif job.compute == "gpu":
-            return self._schedule_gpu_job(job, available_compute, node_usage or {})
+            return self._schedule_gpu_job(job, compute, node_usage or {})
         return None
+
+    def _filter_by_labels(
+        self,
+        available_compute: dict[str, list[Any]],
+        node_selector: dict[str, str],
+        node_labels: dict[str, dict[str, str]],
+    ) -> dict[str, list[Any]]:
+        def _matches(node_id: str) -> bool:
+            labels = node_labels.get(node_id, {})
+            return all(labels.get(k) == v for k, v in node_selector.items())
+
+        filtered: dict[str, list[Any]] = {}
+        for compute_type, entries in available_compute.items():
+            kept = []
+            for entry in entries:
+                if isinstance(entry, list):
+                    node_id = entry[0].get("node_id") if entry else None
+                elif isinstance(entry, dict):
+                    node_id = entry.get("node_id")
+                else:
+                    node_id = None
+                if node_id and _matches(node_id):
+                    kept.append(entry)
+            if kept:
+                filtered[compute_type] = kept
+        return filtered
 
     def _schedule_cpu_job(
         self, available_compute: dict[str, list[Any]], node_usage: dict[str, dict[str, int]]

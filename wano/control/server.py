@@ -140,6 +140,7 @@ async def submit_job(
     kwargs: str | None = None,
     env_vars: str | None = None,
     depends_on: list[str] | None = None,
+    node_selector: dict[str, str] | None = None,
 ):
     if not db or not scheduler:
         raise HTTPException(status_code=500, detail="Control plane not initialized")
@@ -161,12 +162,14 @@ async def submit_job(
         max_retries=max_retries,
         timeout_seconds=timeout_seconds,
         depends_on=depends_on,
+        node_selector=node_selector,
     )
     if depends_on and not db._deps_satisfied(depends_on):
         return {"status": "pending", "job_id": job_id, "message": "Waiting on dependencies"}
     available_compute = db.get_available_compute()
     node_usage = db.get_node_usage()
-    node_ids = scheduler.schedule_job(job, available_compute, node_usage)
+    node_labels = db.get_node_labels()
+    node_ids = scheduler.schedule_job(job, available_compute, node_usage, node_labels)
     if not node_ids:
         return {"status": "pending", "job_id": job_id, "message": "No available compute"}
     db.assign_job(job_id, node_ids)
@@ -226,6 +229,7 @@ async def get_status():
                 "error": j.error,
                 "timeout_seconds": j.timeout_seconds,
                 "depends_on": j.depends_on,
+                "node_selector": j.node_selector,
             }
             for j in jobs
         ],
@@ -268,6 +272,7 @@ async def get_job(job_id: str):
         "result": job.result,
         "timeout_seconds": job.timeout_seconds,
         "depends_on": job.depends_on,
+        "node_selector": job.node_selector,
     }
 
 
@@ -309,8 +314,9 @@ def _retry_pending_jobs():
         return
     available_compute = db.get_available_compute()
     node_usage = db.get_node_usage()
+    node_labels = db.get_node_labels()
     for job in pending_jobs:
-        node_ids = scheduler.schedule_job(job, available_compute, node_usage)
+        node_ids = scheduler.schedule_job(job, available_compute, node_usage, node_labels)
         if node_ids:
             db.assign_job(job.job_id, node_ids)
             ray_node_ids = db.get_ray_node_ids(node_ids)

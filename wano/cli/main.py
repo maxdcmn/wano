@@ -111,8 +111,16 @@ def up(port: int, ray_port: int, db_path: str):
 
 @cli.command()
 @click.option("--control-plane-url", help="Control plane URL (auto-discover if not provided)")
-def join(control_plane_url: str):
-    agent = NodeAgent(control_plane_url=control_plane_url)
+@click.option("--label", multiple=True, help="Node label (format: KEY=VALUE, repeatable)")
+def join(control_plane_url: str, label: tuple[str, ...]):
+    labels = {}
+    for lbl in label:
+        if "=" not in lbl:
+            click.echo(f"Error: Invalid label format '{lbl}'. Use KEY=VALUE", err=True)
+            sys.exit(1)
+        key, value = lbl.split("=", 1)
+        labels[key] = value
+    agent = NodeAgent(control_plane_url=control_plane_url, labels=labels or None)
     click.echo("Starting node agent...")
     try:
         agent.start()
@@ -136,6 +144,9 @@ def join(control_plane_url: str):
 @click.option("--retries", type=int, default=0, show_default=True)
 @click.option("--timeout", "timeout_seconds", type=int, default=None, help="Job timeout in seconds")
 @click.option("--depends-on", multiple=True, help="Job ID this job depends on (repeatable)")
+@click.option(
+    "--node-selector", multiple=True, help="Required node label (format: KEY=VALUE, repeatable)"
+)
 @click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
 def run(
     script: str,
@@ -149,6 +160,7 @@ def run(
     retries: int,
     timeout_seconds: int | None,
     depends_on: tuple[str, ...],
+    node_selector: tuple[str, ...],
     control_plane_url: str,
 ):
     script_path = Path(script)
@@ -199,6 +211,15 @@ def run(
         payload["timeout_seconds"] = timeout_seconds
     if depends_on:
         payload["depends_on"] = list(depends_on)
+    if node_selector:
+        selector = {}
+        for sel in node_selector:
+            if "=" not in sel:
+                click.echo(f"Error: Invalid node-selector format '{sel}'. Use KEY=VALUE", err=True)
+                sys.exit(1)
+            key, value = sel.split("=", 1)
+            selector[key] = value
+        payload["node_selector"] = selector
     if parsed_args is not None:
         payload["args"] = json.dumps(parsed_args)
     if parsed_kwargs is not None:
@@ -647,6 +668,12 @@ def job(job_id: str, control_plane_url: str):
     click.echo(f"Timeout: {timeout}s" if timeout else "Timeout: none")
     deps = data.get("depends_on")
     click.echo(f"Depends on: {', '.join(deps)}" if deps else "Depends on: none")
+    sel = data.get("node_selector")
+    click.echo(
+        f"Node selector: {', '.join(f'{k}={v}' for k, v in sel.items())}"
+        if sel
+        else "Node selector: none"
+    )
     click.echo(f"Function: {data.get('function_name') or '-'}")
     click.echo(f"Created: {data.get('created_at') or '-'}")
     click.echo(f"Started: {data.get('started_at') or '-'}")
