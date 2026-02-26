@@ -5,6 +5,7 @@ import threading
 import time
 import traceback
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +89,7 @@ def _run_job(
     args: str | None = None,
     kwargs: str | None = None,
     env_vars: str | None = None,
+    timeout_seconds: int | None = None,
 ):
     try:
         result = execute_on_ray(
@@ -101,10 +103,16 @@ def _run_job(
             env_vars,
             function_name=function_name,
             ray_node_ids=ray_node_ids,
+            timeout_seconds=timeout_seconds,
         )
         if db:
             result_json = json.dumps(result) if result is not None else None
             db.complete_job(job_id, result=result_json)
+    except TimeoutError as e:
+        error_msg = str(e)
+        log_store.append_lines(job_id, [f"TIMEOUT: {error_msg}"])
+        if db:
+            db.fail_job_timeout(job_id, error=error_msg)
     except Exception as e:
         error_msg = str(e) + "\n" + traceback.format_exc()
         log_store.append_lines(job_id, [f"ERROR: {error_msg}"])
@@ -121,6 +129,7 @@ async def submit_job(
     gpus: int | None = None,
     priority: int = 0,
     max_retries: int = 0,
+    timeout_seconds: int | None = None,
     function_name: str | None = None,
     function_code: str = "",
     args: str | None = None,
@@ -141,6 +150,7 @@ async def submit_job(
         env_vars,
         priority=priority,
         max_retries=max_retries,
+        timeout_seconds=timeout_seconds,
     )
     available_compute = db.get_available_compute()
     node_usage = db.get_node_usage()
@@ -161,6 +171,7 @@ async def submit_job(
         args,
         kwargs,
         env_vars,
+        timeout_seconds,
     )
     return {"status": "submitted", "job_id": job_id, "node_ids": node_ids}
 
@@ -201,6 +212,7 @@ async def get_status():
                 "attempts": j.attempts,
                 "result": j.result,
                 "error": j.error,
+                "timeout_seconds": j.timeout_seconds,
             }
             for j in jobs
         ],
@@ -241,6 +253,7 @@ async def get_job(job_id: str):
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
         "error": job.error,
         "result": job.result,
+        "timeout_seconds": job.timeout_seconds,
     }
 
 
@@ -298,10 +311,29 @@ def _retry_pending_jobs():
                     job.args,
                     job.kwargs,
                     job.env_vars,
+                    job.timeout_seconds,
                 ),
                 daemon=True,
             ).start()
             break
+
+
+def _check_timed_out_jobs():
+    if not db:
+        return
+    for job in db.get_running_jobs():
+        if job.timeout_seconds is None or job.started_at is None:
+            continue
+        elapsed = (datetime.now(UTC) - job.started_at).total_seconds()
+        if elapsed > job.timeout_seconds:
+            with _tasks_lock:
+                tasks = running_tasks.get(job.job_id, [])
+                for task in tasks:
+                    ray.cancel(task, force=True)
+                running_tasks.pop(job.job_id, None)
+            error_msg = f"Job {job.job_id} timed out after {job.timeout_seconds} seconds"
+            log_store.append_lines(job.job_id, [f"TIMEOUT: {error_msg}"])
+            db.fail_job_timeout(job.job_id, error=error_msg)
 
 
 def _start_pending_job_retry():
@@ -310,6 +342,8 @@ def _start_pending_job_retry():
             time.sleep(5)
             with contextlib.suppress(Exception):
                 _retry_pending_jobs()
+            with contextlib.suppress(Exception):
+                _check_timed_out_jobs()
 
     threading.Thread(target=retry_loop, daemon=True).start()
 

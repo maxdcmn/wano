@@ -31,3 +31,4 @@ class Job:
     args: str | None = None
     kwargs: str | None = None
     env_vars: str | None = None
+    timeout_seconds: int | None = None

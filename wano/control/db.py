@@ -30,6 +30,7 @@ class Database:
             self._ensure_column(conn, "jobs", "priority", "INTEGER DEFAULT 0")
             self._ensure_column(conn, "jobs", "max_retries", "INTEGER DEFAULT 0")
             self._ensure_column(conn, "jobs", "attempts", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "jobs", "timeout_seconds", "INTEGER")
             conn.commit()
 
     def _execute(self, query: str, params=()):
@@ -194,11 +195,12 @@ class Database:
         env_vars: str | None = None,
         priority: int = 0,
         max_retries: int = 0,
+        timeout_seconds: int | None = None,
     ) -> Job:
         now = datetime.now(UTC)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO jobs (job_id, compute, gpus, status, priority, max_retries, attempts, created_at, function_name, function_code, args, kwargs, env_vars) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs (job_id, compute, gpus, status, priority, max_retries, attempts, created_at, function_name, function_code, args, kwargs, env_vars, timeout_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job_id,
                     compute,
@@ -213,6 +215,7 @@ class Database:
                     args,
                     kwargs,
                     env_vars,
+                    timeout_seconds,
                 ),
             )
             conn.commit()
@@ -230,6 +233,7 @@ class Database:
             args=args,
             kwargs=kwargs,
             env_vars=env_vars,
+            timeout_seconds=timeout_seconds,
         )
 
     def assign_job(self, job_id: str, node_ids: list[str]):
@@ -291,12 +295,13 @@ class Database:
             args=row[15],
             kwargs=row[16],
             env_vars=row[17],
+            timeout_seconds=row[18] if len(row) > 18 else None,
         )
 
     def get_job(self, job_id: str) -> Job | None:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars FROM jobs WHERE job_id = ?",
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds FROM jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
         return self._row_to_job(row) if row else None
@@ -304,15 +309,29 @@ class Database:
     def get_all_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars FROM jobs ORDER BY created_at DESC"
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds FROM jobs ORDER BY created_at DESC"
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
     def get_pending_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC",
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC",
                 (JobStatus.PENDING.value,),
+            ).fetchall()
+        return [self._row_to_job(row) for row in rows]
+
+    def fail_job_timeout(self, job_id: str, error: str):
+        self._execute(
+            "UPDATE jobs SET status = ?, completed_at = ?, error = ? WHERE job_id = ?",
+            (JobStatus.FAILED.value, datetime.now(UTC).isoformat(), error, job_id),
+        )
+
+    def get_running_jobs(self) -> list[Job]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds FROM jobs WHERE status = ?",
+                (JobStatus.RUNNING.value,),
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
 

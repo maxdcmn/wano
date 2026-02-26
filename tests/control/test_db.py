@@ -133,6 +133,43 @@ def test_get_node_usage(db):
     assert usage["node1"]["cpu"] == 1
 
 
+def test_job_timeout_persisted(db):
+    db.create_job("job-timeout", "cpu", None, None, "def f(): pass", timeout_seconds=300)
+    job = db.get_job("job-timeout")
+    assert job.timeout_seconds == 300
+
+
+def test_job_timeout_none_by_default(db):
+    db.create_job("job-no-timeout", "cpu", None, None, "def f(): pass")
+    job = db.get_job("job-no-timeout")
+    assert job.timeout_seconds is None
+
+
+def test_fail_job_timeout_skips_retries(db):
+    db.create_job("job-t", "cpu", None, None, "def f(): pass", max_retries=5, timeout_seconds=10)
+    db.assign_job("job-t", ["node1"])
+    db.fail_job_timeout("job-t", error="Job timed out after 10 seconds")
+    job = db.get_job("job-t")
+    assert job.status == JobStatus.FAILED
+    assert "timed out" in job.error
+
+
+def test_get_running_jobs(db):
+    db.create_job("job-a", "cpu", None, None, "def f(): pass")
+    db.create_job("job-b", "cpu", None, None, "def f(): pass")
+    db.assign_job("job-a", ["node1"])
+    running = db.get_running_jobs()
+    assert len(running) == 1
+    assert running[0].job_id == "job-a"
+
+
+def test_get_running_jobs_with_timeout(db):
+    db.create_job("job-rt", "cpu", None, None, "def f(): pass", timeout_seconds=60)
+    db.assign_job("job-rt", ["node1"])
+    running = db.get_running_jobs()
+    assert running[0].timeout_seconds == 60
+
+
 def test_cordoned_node_remains_cordoned(db):
     capabilities = NodeCapabilities(
         node_id="node1", compute={"cpu": CPUSpec(cores=8, memory_gb=16)}

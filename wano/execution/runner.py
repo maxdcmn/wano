@@ -25,6 +25,7 @@ def submit_job(
     env_vars: dict | None = None,
     priority: int = 0,
     max_retries: int = 0,
+    timeout_seconds: int | None = None,
 ) -> str:
     function_code_bytes = get_function_code(function_name)
     if not function_code_bytes:
@@ -37,6 +38,8 @@ def submit_job(
         "priority": priority,
         "max_retries": max_retries,
     }
+    if timeout_seconds is not None:
+        payload["timeout_seconds"] = timeout_seconds
     if args is not None:
         payload["args"] = json.dumps(args)
     if kwargs is not None:
@@ -134,6 +137,7 @@ def execute_on_ray(
     env_vars: str | None = None,
     function_name: str | None = None,
     ray_node_ids: list[str | None] | None = None,
+    timeout_seconds: int | None = None,
 ):
     source_code = base64.b64decode(function_code).decode("utf-8")
     if function_name:
@@ -216,7 +220,12 @@ def execute_on_ray(
         running_tasks[job_id] = tasks
 
     try:
-        results = ray.get(tasks)
+        try:
+            results = ray.get(tasks, timeout=timeout_seconds)
+        except ray.exceptions.GetTimeoutError:
+            for task in tasks:
+                ray.cancel(task, force=True)
+            raise TimeoutError(f"Job {job_id} timed out after {timeout_seconds} seconds") from None
         return [r for r, _ in results] if num_gpus > 1 else results[0][0]
     finally:
         with _tasks_lock:
