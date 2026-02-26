@@ -32,3 +32,4 @@ class Job:
     kwargs: str | None = None
     env_vars: str | None = None
     timeout_seconds: int | None = None
+    depends_on: list[str] | None = None

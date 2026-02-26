@@ -135,6 +135,7 @@ def join(control_plane_url: str):
 @click.option("--priority", type=int, default=0, show_default=True)
 @click.option("--retries", type=int, default=0, show_default=True)
 @click.option("--timeout", "timeout_seconds", type=int, default=None, help="Job timeout in seconds")
+@click.option("--depends-on", multiple=True, help="Job ID this job depends on (repeatable)")
 @click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
 def run(
     script: str,
@@ -147,6 +148,7 @@ def run(
     priority: int,
     retries: int,
     timeout_seconds: int | None,
+    depends_on: tuple[str, ...],
     control_plane_url: str,
 ):
     script_path = Path(script)
@@ -195,6 +197,8 @@ def run(
     }
     if timeout_seconds is not None:
         payload["timeout_seconds"] = timeout_seconds
+    if depends_on:
+        payload["depends_on"] = list(depends_on)
     if parsed_args is not None:
         payload["args"] = json.dumps(parsed_args)
     if parsed_kwargs is not None:
@@ -641,6 +645,8 @@ def job(job_id: str, control_plane_url: str):
     click.echo(f"Nodes: {nodes_str if nodes_str else '-'}")
     timeout = data.get("timeout_seconds")
     click.echo(f"Timeout: {timeout}s" if timeout else "Timeout: none")
+    deps = data.get("depends_on")
+    click.echo(f"Depends on: {', '.join(deps)}" if deps else "Depends on: none")
     click.echo(f"Function: {data.get('function_name') or '-'}")
     click.echo(f"Created: {data.get('created_at') or '-'}")
     click.echo(f"Started: {data.get('started_at') or '-'}")

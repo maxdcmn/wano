@@ -113,11 +113,15 @@ def _run_job(
         log_store.append_lines(job_id, [f"TIMEOUT: {error_msg}"])
         if db:
             db.fail_job_timeout(job_id, error=error_msg)
+            db.cascade_failure(job_id)
     except Exception as e:
         error_msg = str(e) + "\n" + traceback.format_exc()
         log_store.append_lines(job_id, [f"ERROR: {error_msg}"])
         if db:
             db.complete_job(job_id, error=error_msg)
+            job = db.get_job(job_id)
+            if job and job.status == JobStatus.FAILED:
+                db.cascade_failure(job_id)
     finally:
         pass
 
@@ -135,9 +139,14 @@ async def submit_job(
     args: str | None = None,
     kwargs: str | None = None,
     env_vars: str | None = None,
+    depends_on: list[str] | None = None,
 ):
     if not db or not scheduler:
         raise HTTPException(status_code=500, detail="Control plane not initialized")
+    if depends_on:
+        missing = db.validate_depends_on(depends_on)
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Unknown dependency job IDs: {missing}")
     job_id = str(uuid.uuid4())
     job = db.create_job(
         job_id,
@@ -151,7 +160,10 @@ async def submit_job(
         priority=priority,
         max_retries=max_retries,
         timeout_seconds=timeout_seconds,
+        depends_on=depends_on,
     )
+    if depends_on and not db._deps_satisfied(depends_on):
+        return {"status": "pending", "job_id": job_id, "message": "Waiting on dependencies"}
     available_compute = db.get_available_compute()
     node_usage = db.get_node_usage()
     node_ids = scheduler.schedule_job(job, available_compute, node_usage)
@@ -213,6 +225,7 @@ async def get_status():
                 "result": j.result,
                 "error": j.error,
                 "timeout_seconds": j.timeout_seconds,
+                "depends_on": j.depends_on,
             }
             for j in jobs
         ],
@@ -254,6 +267,7 @@ async def get_job(job_id: str):
         "error": job.error,
         "result": job.result,
         "timeout_seconds": job.timeout_seconds,
+        "depends_on": job.depends_on,
     }
 
 
@@ -269,7 +283,9 @@ async def cancel_job(job_id: str):
         for task in tasks:
             ray.cancel(task, force=True)
         running_tasks.pop(job_id, None)
-    _check_db().cancel_job(job_id)
+    db_instance = _check_db()
+    db_instance.cancel_job(job_id)
+    db_instance.cascade_failure(job_id)
     return {"status": "cancelled", "job_id": job_id}
 
 
@@ -334,6 +350,7 @@ def _check_timed_out_jobs():
             error_msg = f"Job {job.job_id} timed out after {job.timeout_seconds} seconds"
             log_store.append_lines(job.job_id, [f"TIMEOUT: {error_msg}"])
             db.fail_job_timeout(job.job_id, error=error_msg)
+            db.cascade_failure(job.job_id)
 
 
 def _start_pending_job_retry():

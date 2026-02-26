@@ -170,6 +170,95 @@ def test_get_running_jobs_with_timeout(db):
     assert running[0].timeout_seconds == 60
 
 
+def test_job_depends_on_persisted(db):
+    db.create_job("dep1", "cpu", None, None, "def f(): pass")
+    db.create_job("job-with-deps", "cpu", None, None, "def f(): pass", depends_on=["dep1"])
+    job = db.get_job("job-with-deps")
+    assert job.depends_on == ["dep1"]
+
+
+def test_job_depends_on_none_by_default(db):
+    db.create_job("job-no-deps", "cpu", None, None, "def f(): pass")
+    job = db.get_job("job-no-deps")
+    assert job.depends_on is None
+
+
+def test_get_pending_jobs_skips_unsatisfied_deps(db):
+    db.create_job("dep1", "cpu", None, None, "def f(): pass")
+    db.create_job("job-blocked", "cpu", None, None, "def f(): pass", depends_on=["dep1"])
+    pending = db.get_pending_jobs()
+    assert len(pending) == 1
+    assert pending[0].job_id == "dep1"
+
+
+def test_get_pending_jobs_includes_satisfied_deps(db):
+    db.create_job("dep1", "cpu", None, None, "def f(): pass")
+    db.assign_job("dep1", ["node1"])
+    db.complete_job("dep1")
+    db.create_job("job-ready", "cpu", None, None, "def f(): pass", depends_on=["dep1"])
+    pending = db.get_pending_jobs()
+    assert len(pending) == 1
+    assert pending[0].job_id == "job-ready"
+
+
+def test_cascade_failure_direct(db):
+    db.create_job("dep1", "cpu", None, None, "def f(): pass")
+    db.create_job("job-child", "cpu", None, None, "def f(): pass", depends_on=["dep1"])
+    db.assign_job("dep1", ["node1"])
+    db.complete_job("dep1", error="boom")
+    db.cascade_failure("dep1")
+    child = db.get_job("job-child")
+    assert child.status == JobStatus.FAILED
+    assert "dep1" in child.error
+
+
+def test_cascade_failure_recursive(db):
+    db.create_job("a", "cpu", None, None, "def f(): pass")
+    db.create_job("b", "cpu", None, None, "def f(): pass", depends_on=["a"])
+    db.create_job("c", "cpu", None, None, "def f(): pass", depends_on=["b"])
+    db.assign_job("a", ["node1"])
+    db.complete_job("a", error="boom")
+    db.cascade_failure("a")
+    assert db.get_job("b").status == JobStatus.FAILED
+    assert db.get_job("c").status == JobStatus.FAILED
+    assert "a" in db.get_job("b").error
+    assert "b" in db.get_job("c").error
+
+
+def test_cascade_failure_from_cancel(db):
+    db.create_job("dep1", "cpu", None, None, "def f(): pass")
+    db.create_job("child1", "cpu", None, None, "def f(): pass", depends_on=["dep1"])
+    db.assign_job("dep1", ["node1"])
+    db.cancel_job("dep1")
+    db.cascade_failure("dep1")
+    child = db.get_job("child1")
+    assert child.status == JobStatus.FAILED
+    assert "dep1" in child.error
+
+
+def test_validate_depends_on_missing(db):
+    db.create_job("exists", "cpu", None, None, "def f(): pass")
+    missing = db.validate_depends_on(["exists", "does-not-exist"])
+    assert missing == ["does-not-exist"]
+
+
+def test_validate_depends_on_all_valid(db):
+    db.create_job("a", "cpu", None, None, "def f(): pass")
+    db.create_job("b", "cpu", None, None, "def f(): pass")
+    assert db.validate_depends_on(["a", "b"]) == []
+
+
+def test_cascade_does_not_affect_completed(db):
+    db.create_job("dep1", "cpu", None, None, "def f(): pass")
+    db.create_job("already-done", "cpu", None, None, "def f(): pass", depends_on=["dep1"])
+    db.assign_job("already-done", ["node1"])
+    db.complete_job("already-done")
+    db.assign_job("dep1", ["node1"])
+    db.complete_job("dep1", error="boom")
+    db.cascade_failure("dep1")
+    assert db.get_job("already-done").status == JobStatus.COMPLETED
+
+
 def test_cordoned_node_remains_cordoned(db):
     capabilities = NodeCapabilities(
         node_id="node1", compute={"cpu": CPUSpec(cores=8, memory_gb=16)}
