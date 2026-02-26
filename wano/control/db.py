@@ -5,6 +5,7 @@ from pathlib import Path
 
 from wano.models.compute import CPUSpec, NodeCapabilities
 from wano.models.job import Job, JobStatus
+from wano.models.quota import ResourceQuota
 
 
 class Database:
@@ -34,6 +35,10 @@ class Database:
             self._ensure_column(conn, "jobs", "depends_on", "TEXT")
             self._ensure_column(conn, "nodes", "labels", "TEXT")
             self._ensure_column(conn, "jobs", "node_selector", "TEXT")
+            self._ensure_column(conn, "jobs", "namespace", "TEXT")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS namespaces (namespace TEXT PRIMARY KEY, max_cpu_jobs INTEGER, max_gpu_jobs INTEGER)"
+            )
             conn.commit()
 
     def _execute(self, query: str, params=()):
@@ -215,11 +220,12 @@ class Database:
         timeout_seconds: int | None = None,
         depends_on: list[str] | None = None,
         node_selector: dict[str, str] | None = None,
+        namespace: str | None = None,
     ) -> Job:
         now = datetime.now(UTC)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO jobs (job_id, compute, gpus, status, priority, max_retries, attempts, created_at, function_name, function_code, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs (job_id, compute, gpus, status, priority, max_retries, attempts, created_at, function_name, function_code, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job_id,
                     compute,
@@ -237,6 +243,7 @@ class Database:
                     timeout_seconds,
                     json.dumps(depends_on) if depends_on else None,
                     json.dumps(node_selector) if node_selector else None,
+                    namespace,
                 ),
             )
             conn.commit()
@@ -257,6 +264,7 @@ class Database:
             timeout_seconds=timeout_seconds,
             depends_on=depends_on,
             node_selector=node_selector,
+            namespace=namespace,
         )
 
     def assign_job(self, job_id: str, node_ids: list[str]):
@@ -321,12 +329,13 @@ class Database:
             timeout_seconds=row[18] if len(row) > 18 else None,
             depends_on=json.loads(row[19]) if len(row) > 19 and row[19] else None,
             node_selector=json.loads(row[20]) if len(row) > 20 and row[20] else None,
+            namespace=row[21] if len(row) > 21 else None,
         )
 
     def get_job(self, job_id: str) -> Job | None:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector FROM jobs WHERE job_id = ?",
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace FROM jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
         return self._row_to_job(row) if row else None
@@ -334,14 +343,14 @@ class Database:
     def get_all_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector FROM jobs ORDER BY created_at DESC"
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace FROM jobs ORDER BY created_at DESC"
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
     def get_pending_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC",
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC",
                 (JobStatus.PENDING.value,),
             ).fetchall()
         jobs = [self._row_to_job(row) for row in rows]
@@ -366,7 +375,7 @@ class Database:
     def get_running_jobs(self) -> list[Job]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector FROM jobs WHERE status = ?",
+                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace FROM jobs WHERE status = ?",
                 (JobStatus.RUNNING.value,),
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
@@ -427,3 +436,48 @@ class Database:
             ).fetchall()
         mapping = dict(rows)
         return [mapping.get(node_id) for node_id in node_ids]
+
+    def create_or_update_quota(
+        self, namespace: str, max_cpu_jobs: int | None = None, max_gpu_jobs: int | None = None
+    ):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO namespaces (namespace, max_cpu_jobs, max_gpu_jobs) VALUES (?, ?, ?)",
+                (namespace, max_cpu_jobs, max_gpu_jobs),
+            )
+            conn.commit()
+
+    def get_quota(self, namespace: str) -> ResourceQuota | None:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT namespace, max_cpu_jobs, max_gpu_jobs FROM namespaces WHERE namespace = ?",
+                (namespace,),
+            ).fetchone()
+        if not row:
+            return None
+        return ResourceQuota(namespace=row[0], max_cpu_jobs=row[1], max_gpu_jobs=row[2])
+
+    def get_all_quotas(self) -> list[ResourceQuota]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT namespace, max_cpu_jobs, max_gpu_jobs FROM namespaces"
+            ).fetchall()
+        return [ResourceQuota(namespace=r[0], max_cpu_jobs=r[1], max_gpu_jobs=r[2]) for r in rows]
+
+    def delete_quota(self, namespace: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("DELETE FROM namespaces WHERE namespace = ?", (namespace,))
+            conn.commit()
+        return cursor.rowcount > 0
+
+    def get_namespace_usage(self, namespace: str) -> dict[str, int]:
+        usage: dict[str, int] = {"cpu": 0, "gpu": 0}
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT compute FROM jobs WHERE status = ? AND namespace = ?",
+                (JobStatus.RUNNING.value, namespace),
+            ).fetchall()
+        for (compute,) in rows:
+            key = "gpu" if compute == "gpu" else "cpu"
+            usage[key] += 1
+        return usage

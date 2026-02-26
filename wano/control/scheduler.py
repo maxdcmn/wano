@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from typing import Any
 
 from wano.models.job import Job
+from wano.models.quota import ResourceQuota
 
 
 class Scheduler:
@@ -10,7 +13,15 @@ class Scheduler:
         available_compute: dict[str, list[Any]],
         node_usage: dict[str, dict[str, int]] | None = None,
         node_labels: dict[str, dict[str, str]] | None = None,
+        quota: ResourceQuota | None = None,
+        namespace_usage: dict[str, int] | None = None,
     ) -> list[str] | None:
+        if (
+            quota
+            and namespace_usage is not None
+            and not self._check_quota(job, quota, namespace_usage)
+        ):
+            return None
         compute = available_compute
         if job.node_selector:
             compute = self._filter_by_labels(compute, job.node_selector, node_labels or {})
@@ -19,6 +30,13 @@ class Scheduler:
         elif job.compute == "gpu":
             return self._schedule_gpu_job(job, compute, node_usage or {})
         return None
+
+    def _check_quota(self, job: Job, quota: ResourceQuota, namespace_usage: dict[str, int]) -> bool:
+        if job.compute == "cpu" and quota.max_cpu_jobs is not None:
+            return namespace_usage.get("cpu", 0) < quota.max_cpu_jobs
+        if job.compute == "gpu" and quota.max_gpu_jobs is not None:
+            return namespace_usage.get("gpu", 0) < quota.max_gpu_jobs
+        return True
 
     def _filter_by_labels(
         self,

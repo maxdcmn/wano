@@ -34,3 +34,4 @@ class Job:
     timeout_seconds: int | None = None
     depends_on: list[str] | None = None
     node_selector: dict[str, str] | None = None
+    namespace: str | None = None

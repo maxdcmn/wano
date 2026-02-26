@@ -147,6 +147,7 @@ def join(control_plane_url: str, label: tuple[str, ...]):
 @click.option(
     "--node-selector", multiple=True, help="Required node label (format: KEY=VALUE, repeatable)"
 )
+@click.option("--namespace", default=None, help="Namespace for quota enforcement")
 @click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
 def run(
     script: str,
@@ -160,6 +161,7 @@ def run(
     retries: int,
     timeout_seconds: int | None,
     depends_on: tuple[str, ...],
+    namespace: str | None,
     node_selector: tuple[str, ...],
     control_plane_url: str,
 ):
@@ -220,6 +222,8 @@ def run(
             key, value = sel.split("=", 1)
             selector[key] = value
         payload["node_selector"] = selector
+    if namespace:
+        payload["namespace"] = namespace
     if parsed_args is not None:
         payload["args"] = json.dumps(parsed_args)
     if parsed_kwargs is not None:
@@ -674,6 +678,8 @@ def job(job_id: str, control_plane_url: str):
         if sel
         else "Node selector: none"
     )
+    ns = data.get("namespace")
+    click.echo(f"Namespace: {ns}" if ns else "Namespace: none")
     click.echo(f"Function: {data.get('function_name') or '-'}")
     click.echo(f"Created: {data.get('created_at') or '-'}")
     click.echo(f"Started: {data.get('started_at') or '-'}")
@@ -745,3 +751,88 @@ def down():
     else:
         click.echo("Failed to stop control plane", err=True)
         sys.exit(1)
+
+
+@cli.group()
+def quota():
+    pass
+
+
+@quota.command("set")
+@click.argument("namespace")
+@click.option("--max-cpu-jobs", type=int, default=None, help="Max concurrent CPU jobs")
+@click.option("--max-gpu-jobs", type=int, default=None, help="Max concurrent GPU jobs")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def quota_set(
+    namespace: str, max_cpu_jobs: int | None, max_gpu_jobs: int | None, control_plane_url: str
+):
+    try:
+        payload: dict[str, object] = {"namespace": namespace}
+        if max_cpu_jobs is not None:
+            payload["max_cpu_jobs"] = max_cpu_jobs
+        if max_gpu_jobs is not None:
+            payload["max_gpu_jobs"] = max_gpu_jobs
+        response = requests.post(f"{control_plane_url}/quotas", json=payload)
+        response.raise_for_status()
+        click.echo(f"Quota set for namespace '{namespace}'")
+    except requests.exceptions.RequestException as e:
+        _handle_connection_error(e, control_plane_url)
+
+
+@quota.command("get")
+@click.argument("namespace")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def quota_get(namespace: str, control_plane_url: str):
+    try:
+        response = requests.get(f"{control_plane_url}/quotas/{namespace}", timeout=5)
+        if response.status_code == 404:
+            click.echo(f"Error: No quota for namespace '{namespace}'", err=True)
+            sys.exit(1)
+        response.raise_for_status()
+        data = response.json()
+        click.echo(f"Namespace: {data['namespace']}")
+        click.echo(f"Max CPU jobs: {data.get('max_cpu_jobs') or 'unlimited'}")
+        click.echo(f"Max GPU jobs: {data.get('max_gpu_jobs') or 'unlimited'}")
+        usage = data.get("usage", {})
+        click.echo(f"Running CPU jobs: {usage.get('cpu', 0)}")
+        click.echo(f"Running GPU jobs: {usage.get('gpu', 0)}")
+    except requests.exceptions.RequestException as e:
+        _handle_connection_error(e, control_plane_url)
+
+
+@quota.command("list")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def quota_list(control_plane_url: str):
+    try:
+        response = requests.get(f"{control_plane_url}/quotas", timeout=5)
+        response.raise_for_status()
+        quotas = response.json().get("quotas", [])
+        if not quotas:
+            click.echo("No quotas configured")
+            return
+        ns_w = max(len("Namespace"), max(len(q["namespace"]) for q in quotas))
+        cpu_w = max(len("Max CPU"), 5)
+        gpu_w = max(len("Max GPU"), 5)
+        click.echo(f"{'Namespace':<{ns_w}}  {'Max CPU':<{cpu_w}}  {'Max GPU':<{gpu_w}}")
+        click.echo(f"{'-' * ns_w}  {'-' * cpu_w}  {'-' * gpu_w}")
+        for q in quotas:
+            cpu = str(q.get("max_cpu_jobs") or "-")
+            gpu = str(q.get("max_gpu_jobs") or "-")
+            click.echo(f"{q['namespace']:<{ns_w}}  {cpu:<{cpu_w}}  {gpu:<{gpu_w}}")
+    except requests.exceptions.RequestException as e:
+        _handle_connection_error(e, control_plane_url)
+
+
+@quota.command("delete")
+@click.argument("namespace")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def quota_delete(namespace: str, control_plane_url: str):
+    try:
+        response = requests.delete(f"{control_plane_url}/quotas/{namespace}", timeout=5)
+        if response.status_code == 404:
+            click.echo(f"Error: No quota for namespace '{namespace}'", err=True)
+            sys.exit(1)
+        response.raise_for_status()
+        click.echo(f"Quota deleted for namespace '{namespace}'")
+    except requests.exceptions.RequestException as e:
+        _handle_connection_error(e, control_plane_url)

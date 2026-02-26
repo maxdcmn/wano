@@ -1,5 +1,6 @@
 from wano.control.scheduler import Scheduler
 from wano.models.job import Job, JobStatus
+from wano.models.quota import ResourceQuota
 
 
 def test_cpu_job_with_available_compute():
@@ -108,3 +109,28 @@ def test_job_without_selector_ignores_labels():
     available = {"cpu": [{"node_id": "node1", "cores": 4}]}
     labels = {"node1": {"rack": "A"}}
     assert scheduler.schedule_job(job, available, node_labels=labels) == ["node1"]
+
+
+def test_cpu_job_within_quota():
+    scheduler = Scheduler()
+    job = Job(job_id="job11", compute="cpu", status=JobStatus.PENDING, namespace="team-a")
+    available = {"cpu": [{"node_id": "node1", "cores": 4}]}
+    quota = ResourceQuota(namespace="team-a", max_cpu_jobs=2)
+    usage = {"cpu": 1, "gpu": 0}
+    assert scheduler.schedule_job(job, available, quota=quota, namespace_usage=usage) == ["node1"]
+
+
+def test_cpu_job_exceeds_quota():
+    scheduler = Scheduler()
+    job = Job(job_id="job12", compute="cpu", status=JobStatus.PENDING, namespace="team-a")
+    available = {"cpu": [{"node_id": "node1", "cores": 4}]}
+    quota = ResourceQuota(namespace="team-a", max_cpu_jobs=2)
+    usage = {"cpu": 2, "gpu": 0}
+    assert scheduler.schedule_job(job, available, quota=quota, namespace_usage=usage) is None
+
+
+def test_job_without_namespace_ignores_quota():
+    scheduler = Scheduler()
+    job = Job(job_id="job13", compute="cpu", status=JobStatus.PENDING)
+    available = {"cpu": [{"node_id": "node1", "cores": 4}]}
+    assert scheduler.schedule_job(job, available) == ["node1"]

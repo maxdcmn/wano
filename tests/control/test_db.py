@@ -291,3 +291,41 @@ def test_job_node_selector_none_by_default(db):
     db.create_job("job-no-sel", "cpu", None, None, "def f(): pass")
     job = db.get_job("job-no-sel")
     assert job.node_selector is None
+
+
+def test_job_namespace_persisted(db):
+    db.create_job("job-ns", "cpu", None, None, "def f(): pass", namespace="team-a")
+    job = db.get_job("job-ns")
+    assert job.namespace == "team-a"
+
+
+def test_job_namespace_none_by_default(db):
+    db.create_job("job-no-ns", "cpu", None, None, "def f(): pass")
+    job = db.get_job("job-no-ns")
+    assert job.namespace is None
+
+
+def test_create_and_get_quota(db):
+    db.create_or_update_quota("team-a", max_cpu_jobs=5, max_gpu_jobs=2)
+    quota = db.get_quota("team-a")
+    assert quota is not None
+    assert quota.namespace == "team-a"
+    assert quota.max_cpu_jobs == 5
+    assert quota.max_gpu_jobs == 2
+
+
+def test_get_namespace_usage(db):
+    db.create_job("job1", "cpu", None, None, "def f(): pass", namespace="team-a")
+    db.create_job("job2", "gpu", 1, None, "def f(): pass", namespace="team-a")
+    db.assign_job("job1", ["node1"])
+    db.assign_job("job2", ["node1"])
+    usage = db.get_namespace_usage("team-a")
+    assert usage["cpu"] == 1
+    assert usage["gpu"] == 1
+
+
+def test_delete_quota(db):
+    db.create_or_update_quota("team-b", max_cpu_jobs=3)
+    assert db.delete_quota("team-b")
+    assert db.get_quota("team-b") is None
+    assert not db.delete_quota("nonexistent")

@@ -28,6 +28,7 @@ def submit_job(
     timeout_seconds: int | None = None,
     depends_on: list[str] | None = None,
     node_selector: dict[str, str] | None = None,
+    namespace: str | None = None,
 ) -> str:
     function_code_bytes = get_function_code(function_name)
     if not function_code_bytes:
@@ -46,6 +47,8 @@ def submit_job(
         payload["depends_on"] = depends_on
     if node_selector:
         payload["node_selector"] = node_selector
+    if namespace:
+        payload["namespace"] = namespace
     if args is not None:
         payload["args"] = json.dumps(args)
     if kwargs is not None:

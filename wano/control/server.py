@@ -141,6 +141,7 @@ async def submit_job(
     env_vars: str | None = None,
     depends_on: list[str] | None = None,
     node_selector: dict[str, str] | None = None,
+    namespace: str | None = None,
 ):
     if not db or not scheduler:
         raise HTTPException(status_code=500, detail="Control plane not initialized")
@@ -163,13 +164,18 @@ async def submit_job(
         timeout_seconds=timeout_seconds,
         depends_on=depends_on,
         node_selector=node_selector,
+        namespace=namespace,
     )
     if depends_on and not db._deps_satisfied(depends_on):
         return {"status": "pending", "job_id": job_id, "message": "Waiting on dependencies"}
     available_compute = db.get_available_compute()
     node_usage = db.get_node_usage()
     node_labels = db.get_node_labels()
-    node_ids = scheduler.schedule_job(job, available_compute, node_usage, node_labels)
+    quota = db.get_quota(namespace) if namespace else None
+    ns_usage = db.get_namespace_usage(namespace) if namespace else None
+    node_ids = scheduler.schedule_job(
+        job, available_compute, node_usage, node_labels, quota=quota, namespace_usage=ns_usage
+    )
     if not node_ids:
         return {"status": "pending", "job_id": job_id, "message": "No available compute"}
     db.assign_job(job_id, node_ids)
@@ -230,6 +236,7 @@ async def get_status():
                 "timeout_seconds": j.timeout_seconds,
                 "depends_on": j.depends_on,
                 "node_selector": j.node_selector,
+                "namespace": j.namespace,
             }
             for j in jobs
         ],
@@ -248,6 +255,55 @@ async def uncordon_node(node_id: str):
     if not _check_db().set_node_status(node_id, "active"):
         raise HTTPException(status_code=404, detail="Node not found")
     return {"status": "active", "node_id": node_id}
+
+
+@app.post("/quotas")
+async def set_quota(
+    namespace: str,
+    max_cpu_jobs: int | None = None,
+    max_gpu_jobs: int | None = None,
+):
+    db_instance = _check_db()
+    db_instance.create_or_update_quota(namespace, max_cpu_jobs, max_gpu_jobs)
+    return {"status": "ok", "namespace": namespace}
+
+
+@app.get("/quotas")
+async def list_quotas():
+    db_instance = _check_db()
+    quotas = db_instance.get_all_quotas()
+    return {
+        "quotas": [
+            {
+                "namespace": q.namespace,
+                "max_cpu_jobs": q.max_cpu_jobs,
+                "max_gpu_jobs": q.max_gpu_jobs,
+            }
+            for q in quotas
+        ]
+    }
+
+
+@app.get("/quotas/{namespace}")
+async def get_quota_detail(namespace: str):
+    db_instance = _check_db()
+    quota = db_instance.get_quota(namespace)
+    if not quota:
+        raise HTTPException(status_code=404, detail="Quota not found")
+    usage = db_instance.get_namespace_usage(namespace)
+    return {
+        "namespace": quota.namespace,
+        "max_cpu_jobs": quota.max_cpu_jobs,
+        "max_gpu_jobs": quota.max_gpu_jobs,
+        "usage": usage,
+    }
+
+
+@app.delete("/quotas/{namespace}")
+async def delete_quota(namespace: str):
+    if not _check_db().delete_quota(namespace):
+        raise HTTPException(status_code=404, detail="Quota not found")
+    return {"status": "deleted", "namespace": namespace}
 
 
 @app.get("/jobs/{job_id}")
@@ -273,6 +329,7 @@ async def get_job(job_id: str):
         "timeout_seconds": job.timeout_seconds,
         "depends_on": job.depends_on,
         "node_selector": job.node_selector,
+        "namespace": job.namespace,
     }
 
 
@@ -316,7 +373,11 @@ def _retry_pending_jobs():
     node_usage = db.get_node_usage()
     node_labels = db.get_node_labels()
     for job in pending_jobs:
-        node_ids = scheduler.schedule_job(job, available_compute, node_usage, node_labels)
+        quota = db.get_quota(job.namespace) if job.namespace else None
+        ns_usage = db.get_namespace_usage(job.namespace) if job.namespace else None
+        node_ids = scheduler.schedule_job(
+            job, available_compute, node_usage, node_labels, quota=quota, namespace_usage=ns_usage
+        )
         if node_ids:
             db.assign_job(job.job_id, node_ids)
             ray_node_ids = db.get_ray_node_ids(node_ids)
