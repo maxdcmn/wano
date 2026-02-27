@@ -27,7 +27,6 @@ dev = [
     "mypy>=1.5.0",
     "types-requests>=2.31.0",
     "types-psutil>=5.9.0",
-    "pre-commit>=4.5.1",
     "pytest>=7.4.0",
     "torch>=2.0.0",
     "numpy>=1.24.0",

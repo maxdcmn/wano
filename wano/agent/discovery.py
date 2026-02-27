@@ -1,5 +1,5 @@
 import socket
-import time
+import threading
 
 from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 
@@ -7,11 +7,13 @@ from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 class ControlPlaneListener(ServiceListener):
     def __init__(self):
         self.control_plane_url = None
+        self.found = threading.Event()
 
     def add_service(self, zeroconf, service_type, name):
         info = zeroconf.get_service_info(service_type, name)
         if info:
             self.control_plane_url = f"http://{socket.inet_ntoa(info.addresses[0])}:{info.port}"
+            self.found.set()
 
     def remove_service(self, zeroconf, service_type, name):
         pass
@@ -24,6 +26,6 @@ def discover_control_plane(timeout: float = 5.0) -> str | None:
     zeroconf = Zeroconf()
     listener = ControlPlaneListener()
     ServiceBrowser(zeroconf, "_wano._tcp.local.", listener)
-    time.sleep(timeout)
+    listener.found.wait(timeout)
     zeroconf.close()
     return listener.control_plane_url

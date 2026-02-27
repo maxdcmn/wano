@@ -59,7 +59,11 @@ def detect_gpus() -> list[GPUSpec]:
                         memory_used = int(mem_info.used // (1024**2))
                     gpus.append(
                         GPUSpec(
-                            name=pynvml.nvmlDeviceGetName(handle).decode("utf-8"),
+                            name=(
+                                raw_name.decode("utf-8")
+                                if isinstance((raw_name := pynvml.nvmlDeviceGetName(handle)), bytes)
+                                else str(raw_name)
+                            ),
                             memory_gb=mem_info.total // (1024**3) if mem_info else 0,
                             fan_percent=fan,
                             power_usage_w=power_usage,
@@ -143,15 +147,15 @@ def detect_cpu() -> CPUSpec:
     temp, power, power_max = _get_cpu_metrics()
     utilization = None
     memory_used = None
+    mem = psutil.virtual_memory()
     if psutil:
         with contextlib.suppress(Exception):
             utilization = psutil.cpu_percent(interval=0.1)
         with contextlib.suppress(Exception):
-            mem = psutil.virtual_memory()
             memory_used = int(mem.used // (1024**2))
     return CPUSpec(
         cores=cores,
-        memory_gb=psutil.virtual_memory().total // (1024**3),
+        memory_gb=mem.total // (1024**3),
         name=cpu_name,
         temp_celsius=temp,
         power_usage_w=power,

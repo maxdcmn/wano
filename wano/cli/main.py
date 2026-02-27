@@ -346,11 +346,10 @@ def _get_real_time_gpu_power() -> list[tuple[int | None, int | None]]:
 
 
 def _is_current_node(node_id: str, current_hostname: str) -> bool:
-    return (
-        node_id == current_hostname
-        or node_id.startswith(current_hostname)
-        or current_hostname.startswith(node_id)
-    )
+    if node_id == current_hostname:
+        return True
+    # Match FQDN variants (e.g. "host" vs "host.local")
+    return node_id.split(".")[0] == current_hostname.split(".")[0]
 
 
 def _parse_node_ids(node_ids_raw: str | list[str] | None) -> list[str]:

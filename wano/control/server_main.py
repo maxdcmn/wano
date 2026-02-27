@@ -1,3 +1,4 @@
+import argparse
 import sys
 import traceback
 from pathlib import Path
@@ -11,17 +12,15 @@ except (ImportError, ModuleNotFoundError) as e:
 
 
 def main():
-    if len(sys.argv) < 4:
-        print(
-            f"Usage: server_main.py <port> <ray_port> <db_path>\nGot {len(sys.argv)} arguments: {sys.argv}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Wano control plane server")
+    parser.add_argument("port", type=int, help="API server port")
+    parser.add_argument("ray_port", type=int, help="Ray head port")
+    parser.add_argument("db_path", type=Path, help="SQLite database path")
+    args = parser.parse_args()
     try:
-        port, ray_port, db_path = int(sys.argv[1]), int(sys.argv[2]), Path(sys.argv[3])
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        init_control_plane(db_path, ray_port, port)
-        run_server(port=port)
+        args.db_path.parent.mkdir(parents=True, exist_ok=True)
+        init_control_plane(args.db_path, args.ray_port, args.port)
+        run_server(port=args.port)
     except (ValueError, OSError, RuntimeError) as e:
         print(f"Error starting server: {e}", file=sys.stderr)
         traceback.print_exc()

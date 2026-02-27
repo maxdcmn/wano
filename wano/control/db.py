@@ -165,10 +165,10 @@ class Database:
             ).fetchall()
         return {row[0]: json.loads(row[1]) for row in rows}
 
-    def get_available_compute(self, heartbeat_timeout_seconds: int = 30) -> dict[str, list[dict]]:
+    def get_available_compute(self, heartbeat_timeout_seconds: int = 30) -> dict[str, list]:
         cutoff = datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)
         cutoff_str = cutoff.isoformat()
-        result: dict[str, list[dict]] = {}
+        result: dict[str, list] = {}
         with sqlite3.connect(self.db_path) as conn:
             for node_id, compute_type, spec_json in conn.execute(
                 "SELECT node_id, type, spec_json FROM compute WHERE node_id IN (SELECT node_id FROM nodes WHERE status = 'active' AND last_seen > ?)",
