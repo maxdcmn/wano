@@ -696,6 +696,24 @@ def job(job_id: str, control_plane_url: str):
 
 
 @cli.command()
+@click.argument("job_id")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def cancel(job_id: str, control_plane_url: str):
+    try:
+        response = requests.delete(f"{control_plane_url}/jobs/{job_id}", timeout=5)
+        if response.status_code == 404:
+            click.echo(f"Error: Job {job_id} not found", err=True)
+            sys.exit(1)
+        if response.status_code == 400:
+            click.echo(f"Error: {response.json().get('detail', 'Cannot cancel job')}", err=True)
+            sys.exit(1)
+        response.raise_for_status()
+        click.echo(f"Cancelled {job_id}")
+    except requests.exceptions.RequestException as e:
+        _handle_connection_error(e, control_plane_url)
+
+
+@cli.command()
 @click.argument("node_id")
 @click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
 def cordon(node_id: str, control_plane_url: str):

@@ -51,7 +51,6 @@ def start_detached(command: list, log_file: Path | None = None) -> int:
                 stdout=f,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
-                close_fds=False,
             )
             return process.pid
     process = subprocess.Popen(

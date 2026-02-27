@@ -13,23 +13,46 @@ import ray
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from zeroconf import ServiceInfo, Zeroconf
 
 from wano.control import log_store
 from wano.control.db import Database
 from wano.control.ray_manager import RayManager, get_local_ip
 from wano.control.scheduler import Scheduler
+from wano.control.state import running_tasks, tasks_lock
 from wano.execution.runner import execute_on_ray
 from wano.models.compute import NodeCapabilities
 from wano.models.job import JobStatus
+
+
+class SubmitRequest(BaseModel):
+    compute: str
+    gpus: int | None = None
+    priority: int = 0
+    max_retries: int = 0
+    timeout_seconds: int | None = None
+    function_name: str | None = None
+    function_code: str = ""
+    args: str | None = None
+    kwargs: str | None = None
+    env_vars: str | None = None
+    depends_on: list[str] | None = None
+    node_selector: dict[str, str] | None = None
+    namespace: str | None = None
+
+
+class QuotaRequest(BaseModel):
+    namespace: str
+    max_cpu_jobs: int | None = None
+    max_gpu_jobs: int | None = None
+
 
 app = FastAPI(title="Wano Control Plane")
 db: Database | None = None
 ray_manager: RayManager | None = None
 scheduler: Scheduler | None = None
 zeroconf_instance: Zeroconf | None = None
-running_tasks: dict[str, list] = {}
-_tasks_lock = threading.Lock()
 
 
 def init_control_plane(db_path: Path, ray_port: int = 10001, api_port: int = 8000):
@@ -122,57 +145,40 @@ def _run_job(
             job = db.get_job(job_id)
             if job and job.status == JobStatus.FAILED:
                 db.cascade_failure(job_id)
-    finally:
-        pass
 
 
 @app.post("/submit")
-async def submit_job(
-    background_tasks: BackgroundTasks,
-    compute: str,
-    gpus: int | None = None,
-    priority: int = 0,
-    max_retries: int = 0,
-    timeout_seconds: int | None = None,
-    function_name: str | None = None,
-    function_code: str = "",
-    args: str | None = None,
-    kwargs: str | None = None,
-    env_vars: str | None = None,
-    depends_on: list[str] | None = None,
-    node_selector: dict[str, str] | None = None,
-    namespace: str | None = None,
-):
+async def submit_job(body: SubmitRequest, background_tasks: BackgroundTasks):
     if not db or not scheduler:
         raise HTTPException(status_code=500, detail="Control plane not initialized")
-    if depends_on:
-        missing = db.validate_depends_on(depends_on)
+    if body.depends_on:
+        missing = db.validate_depends_on(body.depends_on)
         if missing:
             raise HTTPException(status_code=400, detail=f"Unknown dependency job IDs: {missing}")
     job_id = str(uuid.uuid4())
     job = db.create_job(
         job_id,
-        compute,
-        gpus,
-        function_name,
-        function_code,
-        args,
-        kwargs,
-        env_vars,
-        priority=priority,
-        max_retries=max_retries,
-        timeout_seconds=timeout_seconds,
-        depends_on=depends_on,
-        node_selector=node_selector,
-        namespace=namespace,
+        body.compute,
+        body.gpus,
+        body.function_name,
+        body.function_code,
+        body.args,
+        body.kwargs,
+        body.env_vars,
+        priority=body.priority,
+        max_retries=body.max_retries,
+        timeout_seconds=body.timeout_seconds,
+        depends_on=body.depends_on,
+        node_selector=body.node_selector,
+        namespace=body.namespace,
     )
-    if depends_on and not db._deps_satisfied(depends_on):
+    if body.depends_on and not db.deps_satisfied(body.depends_on):
         return {"status": "pending", "job_id": job_id, "message": "Waiting on dependencies"}
     available_compute = db.get_available_compute()
     node_usage = db.get_node_usage()
     node_labels = db.get_node_labels()
-    quota = db.get_quota(namespace) if namespace else None
-    ns_usage = db.get_namespace_usage(namespace) if namespace else None
+    quota = db.get_quota(body.namespace) if body.namespace else None
+    ns_usage = db.get_namespace_usage(body.namespace) if body.namespace else None
     node_ids = scheduler.schedule_job(
         job, available_compute, node_usage, node_labels, quota=quota, namespace_usage=ns_usage
     )
@@ -183,16 +189,16 @@ async def submit_job(
     background_tasks.add_task(
         _run_job,
         job_id,
-        function_code,
-        function_name,
+        body.function_code,
+        body.function_name,
         node_ids,
         ray_node_ids,
-        compute,
-        gpus,
-        args,
-        kwargs,
-        env_vars,
-        timeout_seconds,
+        body.compute,
+        body.gpus,
+        body.args,
+        body.kwargs,
+        body.env_vars,
+        body.timeout_seconds,
     )
     return {"status": "submitted", "job_id": job_id, "node_ids": node_ids}
 
@@ -258,14 +264,10 @@ async def uncordon_node(node_id: str):
 
 
 @app.post("/quotas")
-async def set_quota(
-    namespace: str,
-    max_cpu_jobs: int | None = None,
-    max_gpu_jobs: int | None = None,
-):
+async def set_quota(body: QuotaRequest):
     db_instance = _check_db()
-    db_instance.create_or_update_quota(namespace, max_cpu_jobs, max_gpu_jobs)
-    return {"status": "ok", "namespace": namespace}
+    db_instance.create_or_update_quota(body.namespace, body.max_cpu_jobs, body.max_gpu_jobs)
+    return {"status": "ok", "namespace": body.namespace}
 
 
 @app.get("/quotas")
@@ -338,13 +340,14 @@ async def cancel_job(job_id: str):
     job = _check_db().get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.status != JobStatus.RUNNING:
+    if job.status not in (JobStatus.RUNNING, JobStatus.PENDING):
         raise HTTPException(status_code=400, detail=f"Job is {job.status.value}, cannot cancel")
-    with _tasks_lock:
-        tasks = running_tasks.get(job_id, [])
-        for task in tasks:
-            ray.cancel(task, force=True)
-        running_tasks.pop(job_id, None)
+    if job.status == JobStatus.RUNNING:
+        with tasks_lock:
+            tasks = running_tasks.get(job_id, [])
+            for task in tasks:
+                ray.cancel(task, force=True)
+            running_tasks.pop(job_id, None)
     db_instance = _check_db()
     db_instance.cancel_job(job_id)
     db_instance.cascade_failure(job_id)
@@ -398,7 +401,6 @@ def _retry_pending_jobs():
                 ),
                 daemon=True,
             ).start()
-            break
 
 
 def _check_timed_out_jobs():
@@ -409,7 +411,7 @@ def _check_timed_out_jobs():
             continue
         elapsed = (datetime.now(UTC) - job.started_at).total_seconds()
         if elapsed > job.timeout_seconds:
-            with _tasks_lock:
+            with tasks_lock:
                 tasks = running_tasks.get(job.job_id, [])
                 for task in tasks:
                     ray.cancel(task, force=True)
@@ -432,5 +434,14 @@ def _start_pending_job_retry():
     threading.Thread(target=retry_loop, daemon=True).start()
 
 
+def shutdown():
+    if zeroconf_instance:
+        with contextlib.suppress(Exception):
+            zeroconf_instance.close()
+
+
 def run_server(host: str = "0.0.0.0", port: int = 8000):
-    uvicorn.run(app, host=host, port=port)
+    try:
+        uvicorn.run(app, host=host, port=port)
+    finally:
+        shutdown()

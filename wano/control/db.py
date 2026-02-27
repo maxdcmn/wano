@@ -326,10 +326,10 @@ class Database:
             args=row[15],
             kwargs=row[16],
             env_vars=row[17],
-            timeout_seconds=row[18] if len(row) > 18 else None,
-            depends_on=json.loads(row[19]) if len(row) > 19 and row[19] else None,
-            node_selector=json.loads(row[20]) if len(row) > 20 and row[20] else None,
-            namespace=row[21] if len(row) > 21 else None,
+            timeout_seconds=row[18],
+            depends_on=json.loads(row[19]) if row[19] else None,
+            node_selector=json.loads(row[20]) if row[20] else None,
+            namespace=row[21],
         )
 
     def get_job(self, job_id: str) -> Job | None:
@@ -354,9 +354,9 @@ class Database:
                 (JobStatus.PENDING.value,),
             ).fetchall()
         jobs = [self._row_to_job(row) for row in rows]
-        return [j for j in jobs if not j.depends_on or self._deps_satisfied(j.depends_on)]
+        return [j for j in jobs if not j.depends_on or self.deps_satisfied(j.depends_on)]
 
-    def _deps_satisfied(self, dep_ids: list[str]) -> bool:
+    def deps_satisfied(self, dep_ids: list[str]) -> bool:
         with sqlite3.connect(self.db_path) as conn:
             placeholders = ",".join(["?"] * len(dep_ids))
             rows = conn.execute(
@@ -380,7 +380,12 @@ class Database:
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
-    def cascade_failure(self, failed_job_id: str):
+    def cascade_failure(self, failed_job_id: str, _visited: set[str] | None = None):
+        if _visited is None:
+            _visited = set()
+        if failed_job_id in _visited:
+            return
+        _visited.add(failed_job_id)
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT job_id, depends_on, status FROM jobs WHERE status IN (?, ?)",
@@ -405,7 +410,7 @@ class Database:
                     JobStatus.RUNNING.value,
                 ),
             )
-            self.cascade_failure(dep_job_id)
+            self.cascade_failure(dep_job_id, _visited)
 
     def validate_depends_on(self, dep_ids: list[str]) -> list[str]:
         with sqlite3.connect(self.db_path) as conn:

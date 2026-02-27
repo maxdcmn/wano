@@ -125,10 +125,10 @@ def _run_container(
                 if decoded:
                     log_store.append_lines(job_id, [decoded])
                     logs_buffer.append(decoded)
-            result = json.loads(result_file.read_text()) if result_file.exists() else None
             status = container.wait()
             if status.get("StatusCode", 0) != 0:
                 raise RuntimeError("\n".join(logs_buffer) or "Container exited with failure")
+            result = json.loads(result_file.read_text()) if result_file.exists() else None
             return result, "\n".join(logs_buffer)
         finally:
             with contextlib.suppress(Exception):
@@ -166,7 +166,7 @@ def execute_on_ray(
             job_id, source_code, func_name, parsed_args, parsed_kwargs, parsed_env_vars, compute
         )
 
-    num_gpus = gpus or 1 if compute == "gpu" else 0
+    num_gpus = (gpus or 1) if compute == "gpu" else 0
 
     def _resolve_ray_node_id(wano_node_id: str) -> str | None:
         for node in ray.nodes():
@@ -223,9 +223,9 @@ def execute_on_ray(
             options["scheduling_strategy"] = strategy
         tasks = [ray.remote(num_cpus=1)(run_task).options(**options).remote()]
 
-    from wano.control.server import _tasks_lock, running_tasks
+    from wano.control.state import running_tasks, tasks_lock
 
-    with _tasks_lock:
+    with tasks_lock:
         running_tasks[job_id] = tasks
 
     try:
@@ -237,11 +237,12 @@ def execute_on_ray(
             raise TimeoutError(f"Job {job_id} timed out after {timeout_seconds} seconds") from None
         return [r for r, _ in results] if num_gpus > 1 else results[0][0]
     finally:
-        with _tasks_lock:
+        with tasks_lock:
             running_tasks.pop(job_id, None)
 
 
 def stream_logs(job_id: str, control_plane_url: str = "http://localhost:8000"):
-    for line in requests.get(f"{control_plane_url}/jobs/{job_id}/logs", stream=True).iter_lines():
+    response = requests.get(f"{control_plane_url}/jobs/{job_id}/logs", stream=True, timeout=30)
+    for line in response.iter_lines():
         if line:
             print(line.decode("utf-8"))
