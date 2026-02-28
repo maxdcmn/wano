@@ -1,11 +1,14 @@
 import json
 import sqlite3
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from wano.models.compute import CPUSpec, NodeCapabilities
 from wano.models.job import Job, JobStatus
 from wano.models.quota import ResourceQuota
+
+_JOB_COLS = "job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace"
 
 
 class Database:
@@ -78,33 +81,9 @@ class Database:
             )
             for compute_type, spec in capabilities.compute.items():
                 if compute_type == "gpu" and isinstance(spec, list):
-                    spec_json = json.dumps(
-                        [
-                            {
-                                "name": g.name,
-                                "memory_gb": g.memory_gb,
-                                "fan_percent": g.fan_percent,
-                                "power_usage_w": g.power_usage_w,
-                                "power_cap_w": g.power_cap_w,
-                                "utilization_percent": g.utilization_percent,
-                                "memory_used_mib": g.memory_used_mib,
-                            }
-                            for g in spec
-                        ]
-                    )
+                    spec_json = json.dumps([asdict(g) for g in spec])
                 elif compute_type == "cpu" and isinstance(spec, CPUSpec):
-                    spec_json = json.dumps(
-                        {
-                            "cores": spec.cores,
-                            "memory_gb": spec.memory_gb,
-                            "name": spec.name,
-                            "temp_celsius": spec.temp_celsius,
-                            "power_usage_w": spec.power_usage_w,
-                            "power_cap_w": spec.power_cap_w,
-                            "utilization_percent": spec.utilization_percent,
-                            "memory_used_mib": spec.memory_used_mib,
-                        }
-                    )
+                    spec_json = json.dumps(asdict(spec))
                 else:
                     continue
                 conn.execute(
@@ -318,9 +297,9 @@ class Database:
             gpus=row[2],
             status=JobStatus(row[3]),
             node_ids=json.loads(row[4]) if row[4] else None,
-            priority=row[5] if row[5] is not None else 0,
-            max_retries=row[6] if row[6] is not None else 0,
-            attempts=row[7] if row[7] is not None else 0,
+            priority=row[5] or 0,
+            max_retries=row[6] or 0,
+            attempts=row[7] or 0,
             created_at=datetime.fromisoformat(row[8]) if row[8] else None,
             started_at=datetime.fromisoformat(row[9]) if row[9] else None,
             completed_at=datetime.fromisoformat(row[10]) if row[10] else None,
@@ -340,22 +319,20 @@ class Database:
     def get_job(self, job_id: str) -> Job | None:
         with self._conn as conn:
             row = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace FROM jobs WHERE job_id = ?",
+                f"SELECT {_JOB_COLS} FROM jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
         return self._row_to_job(row) if row else None
 
     def get_all_jobs(self) -> list[Job]:
         with self._conn as conn:
-            rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace FROM jobs ORDER BY created_at DESC"
-            ).fetchall()
+            rows = conn.execute(f"SELECT {_JOB_COLS} FROM jobs ORDER BY created_at DESC").fetchall()
         return [self._row_to_job(row) for row in rows]
 
     def get_pending_jobs(self) -> list[Job]:
         with self._conn as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC",
+                f"SELECT {_JOB_COLS} FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC",
                 (JobStatus.PENDING.value,),
             ).fetchall()
         jobs = [self._row_to_job(row) for row in rows]
@@ -380,7 +357,7 @@ class Database:
     def get_running_jobs(self) -> list[Job]:
         with self._conn as conn:
             rows = conn.execute(
-                "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace FROM jobs WHERE status = ?",
+                f"SELECT {_JOB_COLS} FROM jobs WHERE status = ?",
                 (JobStatus.RUNNING.value,),
             ).fetchall()
         return [self._row_to_job(row) for row in rows]

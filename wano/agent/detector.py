@@ -53,7 +53,6 @@ def detect_gpus() -> list[GPUSpec]:
                         util = pynvml.nvmlDeviceGetUtilizationRates(handle)
                         utilization = float(util.gpu)
                     mem_info = None
-                    memory_used = None
                     with contextlib.suppress(NVMLError):
                         mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
                         memory_used = int(mem_info.used // (1024**2))

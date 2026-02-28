@@ -66,7 +66,7 @@ def submit_job(
     raise ValueError("Invalid response: missing job_id")
 
 
-def _build_script(source_code: str, func_name: str) -> str:
+def _build_script(source_code: str, function_name: str) -> str:
     return f"""\
 import json, os
 {source_code}
@@ -74,7 +74,7 @@ _args = json.loads(os.environ.get("ARGS", "[]"))
 _kwargs = json.loads(os.environ.get("KWARGS", "{{}}"))
 for _k, _v in json.loads(os.environ.get("ENV_VARS", "{{}}")).items():
     os.environ[_k] = str(_v)
-_result = {func_name}(*_args, **_kwargs)
+_result = {function_name}(*_args, **_kwargs)
 with open("/tmp/result.json", "w") as f:
     json.dump(_result, f)
 """
@@ -83,7 +83,7 @@ with open("/tmp/result.json", "w") as f:
 def _run_container(
     job_id: str,
     source_code: str,
-    func_name: str,
+    function_name: str,
     args: list,
     kwargs: dict,
     env_vars: dict,
@@ -92,7 +92,7 @@ def _run_container(
     client = docker.from_env()
     with tempfile.TemporaryDirectory() as tmpdir:
         script = Path(tmpdir) / "job.py"
-        script.write_text(_build_script(source_code, func_name))
+        script.write_text(_build_script(source_code, function_name))
         result_file = Path(tmpdir) / "result.json"
         result_file.touch()
         device_requests = None
@@ -149,13 +149,11 @@ def execute_on_ray(
     timeout_seconds: int | None = None,
 ):
     source_code = base64.b64decode(function_code).decode("utf-8")
-    if function_name:
-        func_name = function_name
-    else:
+    if not function_name:
         match = re.search(r"def\s+(\w+)\s*\(", source_code)
         if not match:
             raise ValueError("Could not find function definition in source code")
-        func_name = match.group(1)
+        function_name = match.group(1)
 
     parsed_args = json.loads(args) if args else []
     parsed_kwargs = json.loads(kwargs) if kwargs else {}
@@ -163,7 +161,7 @@ def execute_on_ray(
 
     def run_task():
         return _run_container(
-            job_id, source_code, func_name, parsed_args, parsed_kwargs, parsed_env_vars, compute
+            job_id, source_code, function_name, parsed_args, parsed_kwargs, parsed_env_vars, compute
         )
 
     num_gpus = (gpus or 1) if compute == "gpu" else 0
@@ -184,44 +182,32 @@ def execute_on_ray(
     except Exception:  # pragma: no cover - optional ray module
         NodeAffinitySchedulingStrategy = None
 
-    def _strategy(node_id: str | None):
-        if not node_id or not NodeAffinitySchedulingStrategy:
-            return None
-        return NodeAffinitySchedulingStrategy(node_id=node_id, soft=False)
+    def _make_task(ray_node_id: str | None, **resources):
+        options = {}
+        if ray_node_id and NodeAffinitySchedulingStrategy:
+            options["scheduling_strategy"] = NodeAffinitySchedulingStrategy(
+                node_id=ray_node_id, soft=False
+            )
+        return ray.remote(**resources)(run_task).options(**options).remote()
+
+    def _resolve(wano_id: str, ray_id: str | None = None) -> str | None:
+        return ray_id or _resolve_ray_node_id(wano_id)
 
     if compute == "gpu":
-        if not node_ids:
-            assignments: list[str] = []
-        else:
-            assignments = node_ids[:num_gpus] if len(node_ids) >= num_gpus else list(node_ids)
-            if len(assignments) < num_gpus:
-                assignments.extend([assignments[0]] * (num_gpus - len(assignments)))
-        if ray_node_ids and len(ray_node_ids) == len(assignments):
-            resolved_ray_ids = [
-                ray_id or _resolve_ray_node_id(node_id)
-                for ray_id, node_id in zip(ray_node_ids, assignments, strict=False)
-            ]
-        else:
-            resolved_ray_ids = [_resolve_ray_node_id(node_id) for node_id in assignments]
-        tasks = []
-        for idx in range(num_gpus):
-            options = {}
-            strategy = _strategy(resolved_ray_ids[idx] if idx < len(resolved_ray_ids) else None)
-            if strategy:
-                options["scheduling_strategy"] = strategy
-            tasks.append(ray.remote(num_gpus=1)(run_task).options(**options).remote())
+        assignments = list(node_ids[:num_gpus]) if node_ids else []
+        if assignments and len(assignments) < num_gpus:
+            assignments.extend([assignments[0]] * (num_gpus - len(assignments)))
+        resolved = [
+            _resolve(wid, rid) for wid, rid in zip(assignments, ray_node_ids or [], strict=False)
+        ] + [_resolve_ray_node_id(wid) for wid in assignments[len(ray_node_ids or []) :]]
+        tasks = [
+            _make_task(resolved[i] if i < len(resolved) else None, num_gpus=1)
+            for i in range(num_gpus)
+        ]
     else:
-        target_node = node_ids[0] if node_ids else None
-        ray_target = None
-        if ray_node_ids and ray_node_ids[0]:
-            ray_target = ray_node_ids[0]
-        elif target_node:
-            ray_target = _resolve_ray_node_id(target_node)
-        options = {}
-        strategy = _strategy(ray_target)
-        if strategy:
-            options["scheduling_strategy"] = strategy
-        tasks = [ray.remote(num_cpus=1)(run_task).options(**options).remote()]
+        target = node_ids[0] if node_ids else None
+        ray_target = _resolve(target, (ray_node_ids or [None])[0]) if target else None
+        tasks = [_make_task(ray_target, num_cpus=1)]
 
     from wano.control.state import running_tasks, tasks_lock
 

@@ -46,6 +46,31 @@ except ImportError:
     psutil = None  # type: ignore[assignment]
 
 
+def _parse_json(value: str | None, expected_type: type, label: str):
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        click.echo(f"Error: --{label} must be a JSON {expected_type.__name__}", err=True)
+        sys.exit(1)
+    if not isinstance(parsed, expected_type):
+        click.echo(f"Error: --{label} must be a JSON {expected_type.__name__}", err=True)
+        sys.exit(1)
+    return parsed
+
+
+def _parse_kv(pairs: tuple[str, ...], label: str) -> dict[str, str]:
+    result = {}
+    for pair in pairs:
+        if "=" not in pair:
+            click.echo(f"Error: Invalid {label} format '{pair}'. Use KEY=VALUE", err=True)
+            sys.exit(1)
+        key, value = pair.split("=", 1)
+        result[key] = value
+    return result
+
+
 @click.group()
 @click.version_option(version=wano.__version__)
 def cli():
@@ -113,13 +138,7 @@ def up(port: int, ray_port: int, db_path: str):
 @click.option("--control-plane-url", help="Control plane URL (auto-discover if not provided)")
 @click.option("--label", multiple=True, help="Node label (format: KEY=VALUE, repeatable)")
 def join(control_plane_url: str, label: tuple[str, ...]):
-    labels = {}
-    for lbl in label:
-        if "=" not in lbl:
-            click.echo(f"Error: Invalid label format '{lbl}'. Use KEY=VALUE", err=True)
-            sys.exit(1)
-        key, value = lbl.split("=", 1)
-        labels[key] = value
+    labels = _parse_kv(label, "label")
     agent = NodeAgent(control_plane_url=control_plane_url, labels=labels or None)
     click.echo("Starting node agent...")
     try:
@@ -169,33 +188,9 @@ def run(
     if not script_path.exists():
         click.echo(f"Error: Script {script} not found", err=True)
         sys.exit(1)
-    parsed_args: list | None = None
-    parsed_kwargs: dict | None = None
-    if args:
-        try:
-            parsed_args = json.loads(args)
-        except json.JSONDecodeError:
-            click.echo("Error: --args must be a JSON array", err=True)
-            sys.exit(1)
-        if not isinstance(parsed_args, list):
-            click.echo("Error: --args must be a JSON array", err=True)
-            sys.exit(1)
-    if kwargs:
-        try:
-            parsed_kwargs = json.loads(kwargs)
-        except json.JSONDecodeError:
-            click.echo("Error: --kwargs must be a JSON object", err=True)
-            sys.exit(1)
-        if not isinstance(parsed_kwargs, dict):
-            click.echo("Error: --kwargs must be a JSON object", err=True)
-            sys.exit(1)
-    env_vars = {}
-    for env_pair in env:
-        if "=" not in env_pair:
-            click.echo(f"Error: Invalid env format '{env_pair}'. Use KEY=VALUE", err=True)
-            sys.exit(1)
-        key, value = env_pair.split("=", 1)
-        env_vars[key] = value
+    parsed_args = _parse_json(args, list, "args")
+    parsed_kwargs = _parse_json(kwargs, dict, "kwargs")
+    env_vars = _parse_kv(env, "env")
     if not function_name:
         click.echo("Submitting job...\nNote: No --function provided, using first def in script")
     else:
@@ -214,14 +209,7 @@ def run(
     if depends_on:
         payload["depends_on"] = list(depends_on)
     if node_selector:
-        selector = {}
-        for sel in node_selector:
-            if "=" not in sel:
-                click.echo(f"Error: Invalid node-selector format '{sel}'. Use KEY=VALUE", err=True)
-                sys.exit(1)
-            key, value = sel.split("=", 1)
-            selector[key] = value
-        payload["node_selector"] = selector
+        payload["node_selector"] = _parse_kv(node_selector, "node-selector")
     if namespace:
         payload["namespace"] = namespace
     if parsed_args is not None:
@@ -245,33 +233,14 @@ def build_executor(requirements: str | None, tag: str, base_image: str):
     click.echo(f"Building executor image: {tag}")
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
-        dockerfile = tmp_path / "Dockerfile"
+        lines = [f"FROM {base_image}", "WORKDIR /job"]
         if requirements:
-            req_path = Path(requirements)
-            copyfile(req_path, tmp_path / "requirements.txt")
-            dockerfile.write_text(
-                "\n".join(
-                    [
-                        f"FROM {base_image}",
-                        "WORKDIR /job",
-                        "COPY requirements.txt /tmp/requirements.txt",
-                        "RUN pip install --no-cache-dir ray requests",
-                        "RUN pip install --no-cache-dir -r /tmp/requirements.txt",
-                    ]
-                )
-                + "\n"
-            )
-        else:
-            dockerfile.write_text(
-                "\n".join(
-                    [
-                        f"FROM {base_image}",
-                        "WORKDIR /job",
-                        "RUN pip install --no-cache-dir ray requests",
-                    ]
-                )
-                + "\n"
-            )
+            copyfile(Path(requirements), tmp_path / "requirements.txt")
+            lines.append("COPY requirements.txt /tmp/requirements.txt")
+        lines.append("RUN pip install --no-cache-dir ray requests")
+        if requirements:
+            lines.append("RUN pip install --no-cache-dir -r /tmp/requirements.txt")
+        (tmp_path / "Dockerfile").write_text("\n".join(lines) + "\n")
         try:
             subprocess.run(["docker", "build", "-t", tag, str(tmp_path)], check=True)
         except subprocess.CalledProcessError as e:
@@ -283,11 +252,9 @@ def build_executor(requirements: str | None, tag: str, base_image: str):
 def _progress_bar(used: int, total: int, width: int = 10) -> str:
     if total == 0:
         return "[" + " " * width + "] 0%"
-    ratio = used / total
-    percent = min(100, int(ratio * 100))
+    ratio = min(1.0, used / total)
     filled = int(ratio * width)
-    bar = "█" * filled + "░" * (width - filled)
-    return f"[{bar}] {percent}%"
+    return f"[{'█' * filled}{'░' * (width - filled)}] {int(ratio * 100)}%"
 
 
 def _get_real_time_cpu_usage() -> float:
@@ -299,39 +266,20 @@ def _get_real_time_cpu_usage() -> float:
         return 0.0
 
 
-def _get_real_time_gpu_usage() -> list[float]:
+def _get_real_time_gpu_stats() -> tuple[list[float], list[tuple[int | None, int | None]]]:
     if not HAS_NVML:
-        return []
+        return [], []
     try:
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, message=".*pynvml.*")
             pynvml.nvmlInit()
-            gpu_count = pynvml.nvmlDeviceGetCount()
             utilizations = []
-            for i in range(gpu_count):
+            power_data = []
+            for i in range(pynvml.nvmlDeviceGetCount()):
                 handle = pynvml.nvmlDeviceGetHandleByIndex(i)
                 with contextlib.suppress(NVMLError):
-                    util = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                    utilizations.append(util.gpu)
-            pynvml.nvmlShutdown()
-            return utilizations
-    except (NVMLError, AttributeError):
-        return []
-
-
-def _get_real_time_gpu_power() -> list[tuple[int | None, int | None]]:
-    if not HAS_NVML:
-        return []
-    try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=FutureWarning, message=".*pynvml.*")
-            pynvml.nvmlInit()
-            gpu_count = pynvml.nvmlDeviceGetCount()
-            power_data = []
-            for i in range(gpu_count):
-                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-                power_usage = None
-                power_cap = None
+                    utilizations.append(pynvml.nvmlDeviceGetUtilizationRates(handle).gpu)
+                power_usage = power_cap = None
                 with contextlib.suppress(NVMLError):
                     power_usage = pynvml.nvmlDeviceGetPowerUsage(handle) // 1000
                 with contextlib.suppress(NVMLError):
@@ -340,16 +288,13 @@ def _get_real_time_gpu_power() -> list[tuple[int | None, int | None]]:
                     )
                 power_data.append((power_usage, power_cap))
             pynvml.nvmlShutdown()
-            return power_data
+            return utilizations, power_data
     except (NVMLError, AttributeError):
-        return []
+        return [], []
 
 
 def _is_current_node(node_id: str, current_hostname: str) -> bool:
-    if node_id == current_hostname:
-        return True
-    # Match FQDN variants (e.g. "host" vs "host.local")
-    return node_id.split(".")[0] == current_hostname.split(".")[0]
+    return node_id == current_hostname or node_id.split(".")[0] == current_hostname.split(".")[0]
 
 
 def _parse_node_ids(node_ids_raw: str | list[str] | None) -> list[str]:
@@ -388,9 +333,7 @@ def _truncate(text: str, width: int) -> str:
 def _format_memory(gb: int | None, used_mib: int | None = None) -> str:
     if not gb:
         return "? MiB / ? MiB"
-    total_mib = int(gb * 1024)
-    used = used_mib if used_mib is not None else 0
-    return f"{used} MiB / {total_mib} MiB"
+    return f"{used_mib or 0} MiB / {int(gb * 1024)} MiB"
 
 
 def _format_power(usage: int | float | None, cap: int | float | None = None) -> str:
@@ -410,10 +353,9 @@ def _format_job_result(value: str | None) -> str:
     if value is None:
         return "None"
     try:
-        parsed = json.loads(value)
+        return json.dumps(json.loads(value), indent=2, sort_keys=True)
     except json.JSONDecodeError:
         return value
-    return json.dumps(parsed, indent=2, sort_keys=True)
 
 
 def _handle_connection_error(e: requests.exceptions.RequestException, control_plane_url: str):
@@ -451,7 +393,7 @@ def status(control_plane_url: str):
             joined_label = "Yes" if current_hostname in active_nodes else "No"
         compute = data.get("compute", {})
         real_time_cpu = _get_real_time_cpu_usage()
-        real_time_gpus = _get_real_time_gpu_usage()
+        real_time_gpus, _ = _get_real_time_gpu_stats()
         node_usage: dict[str, dict[str, int]] = {}
         for job in jobs:
             if job.get("status") != "running":
@@ -488,17 +430,14 @@ def status(control_plane_url: str):
                         used = _calc_used(
                             node_id, current_hostname, total, real_time_gpus, "gpu", node_usage
                         )
-                    gpu_power_usage = gpu.get("power_usage_w")
-                    gpu_power_cap = gpu.get("power_cap_w")
-                    memory_used = gpu.get("memory_used_mib")
                     compute_rows.append(
                         (
                             node_id,
                             gpu.get("name", "GPU"),
                             f"GPU {_progress_bar(used, total)}",
-                            _format_memory(gpu.get("memory_gb"), memory_used),
+                            _format_memory(gpu.get("memory_gb"), gpu.get("memory_used_mib")),
                             "N/A",
-                            _format_power(gpu_power_usage, gpu_power_cap),
+                            _format_power(gpu.get("power_usage_w"), gpu.get("power_cap_w")),
                             f"{used}/{total}",
                         )
                     )
@@ -512,18 +451,14 @@ def status(control_plane_url: str):
                         used = _calc_used(
                             node_id, current_hostname, cores, real_time_cpu, "cpu", node_usage
                         )
-                    temp = cpu.get("temp_celsius")
-                    cpu_power = cpu.get("power_usage_w")
-                    cpu_power_max = cpu.get("power_cap_w")
-                    memory_used = cpu.get("memory_used_mib")
                     compute_rows.append(
                         (
                             node_id,
                             cpu.get("name") or f"{cores} cores",
                             f"CPU {_progress_bar(used, cores)}",
-                            _format_memory(cpu.get("memory_gb"), memory_used),
-                            _format_temp(temp),
-                            _format_power(cpu_power, cpu_power_max),
+                            _format_memory(cpu.get("memory_gb"), cpu.get("memory_used_mib")),
+                            _format_temp(cpu.get("temp_celsius")),
+                            _format_power(cpu.get("power_usage_w"), cpu.get("power_cap_w")),
                             f"{used}/{cores}",
                         )
                     )
@@ -661,28 +596,30 @@ def job(job_id: str, control_plane_url: str):
     node_ids = data.get("node_ids") or []
     nodes_str = ", ".join(node_ids) if isinstance(node_ids, list) else str(node_ids)
 
-    click.echo(f"Job ID: {data.get('job_id')}")
-    click.echo(f"Status: {data.get('status')}")
-    click.echo(f"Resources: {resources}")
-    click.echo(f"Priority: {data.get('priority', 0)}")
-    click.echo(f"Attempts: {data.get('attempts', 0)} / {data.get('max_retries', 0)}")
-    click.echo(f"Nodes: {nodes_str if nodes_str else '-'}")
     timeout = data.get("timeout_seconds")
-    click.echo(f"Timeout: {timeout}s" if timeout else "Timeout: none")
     deps = data.get("depends_on")
-    click.echo(f"Depends on: {', '.join(deps)}" if deps else "Depends on: none")
     sel = data.get("node_selector")
-    click.echo(
-        f"Node selector: {', '.join(f'{k}={v}' for k, v in sel.items())}"
-        if sel
-        else "Node selector: none"
-    )
     ns = data.get("namespace")
-    click.echo(f"Namespace: {ns}" if ns else "Namespace: none")
-    click.echo(f"Function: {data.get('function_name') or '-'}")
-    click.echo(f"Created: {data.get('created_at') or '-'}")
-    click.echo(f"Started: {data.get('started_at') or '-'}")
-    click.echo(f"Completed: {data.get('completed_at') or '-'}")
+    click.echo(
+        "\n".join(
+            [
+                f"Job ID: {data.get('job_id')}",
+                f"Status: {data.get('status')}",
+                f"Resources: {resources}",
+                f"Priority: {data.get('priority', 0)}",
+                f"Attempts: {data.get('attempts', 0)} / {data.get('max_retries', 0)}",
+                f"Nodes: {nodes_str or '-'}",
+                f"Timeout: {f'{timeout}s' if timeout else 'none'}",
+                f"Depends on: {', '.join(deps) if deps else 'none'}",
+                f"Node selector: {', '.join(f'{k}={v}' for k, v in sel.items()) if sel else 'none'}",
+                f"Namespace: {ns or 'none'}",
+                f"Function: {data.get('function_name') or '-'}",
+                f"Created: {data.get('created_at') or '-'}",
+                f"Started: {data.get('started_at') or '-'}",
+                f"Completed: {data.get('completed_at') or '-'}",
+            ]
+        )
+    )
 
     error = data.get("error")
     if error:
@@ -712,34 +649,30 @@ def cancel(job_id: str, control_plane_url: str):
         _handle_connection_error(e, control_plane_url)
 
 
-@cli.command()
-@click.argument("node_id")
-@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
-def cordon(node_id: str, control_plane_url: str):
+def _node_action(node_id: str, action: str, control_plane_url: str):
     try:
-        response = requests.post(f"{control_plane_url}/nodes/{node_id}/cordon", timeout=5)
+        response = requests.post(f"{control_plane_url}/nodes/{node_id}/{action}", timeout=5)
         if response.status_code == 404:
             click.echo(f"Error: Node {node_id} not found", err=True)
             sys.exit(1)
         response.raise_for_status()
-        click.echo(f"Cordoned {node_id}")
+        click.echo(f"{action.capitalize()}ed {node_id}")
     except requests.exceptions.RequestException as e:
         _handle_connection_error(e, control_plane_url)
+
+
+@cli.command()
+@click.argument("node_id")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def cordon(node_id: str, control_plane_url: str):
+    _node_action(node_id, "cordon", control_plane_url)
 
 
 @cli.command()
 @click.argument("node_id")
 @click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
 def uncordon(node_id: str, control_plane_url: str):
-    try:
-        response = requests.post(f"{control_plane_url}/nodes/{node_id}/uncordon", timeout=5)
-        if response.status_code == 404:
-            click.echo(f"Error: Node {node_id} not found", err=True)
-            sys.exit(1)
-        response.raise_for_status()
-        click.echo(f"Uncordoned {node_id}")
-    except requests.exceptions.RequestException as e:
-        _handle_connection_error(e, control_plane_url)
+    _node_action(node_id, "uncordon", control_plane_url)
 
 
 @cli.command()
@@ -750,9 +683,7 @@ def down():
         sys.exit(1)
     if not is_process_running(pid):
         click.echo(f"Process {pid} is not running (stale PID file)", err=True)
-        pid_file = get_pid_file()
-        if pid_file.exists():
-            pid_file.unlink()
+        get_pid_file().unlink(missing_ok=True)
         sys.exit(1)
     click.echo(f"Stopping control plane (PID: {pid})...")
     if kill_process(pid):
@@ -761,9 +692,7 @@ def down():
             click.echo("Force killing process...")
             with contextlib.suppress(OSError):
                 os.kill(pid, signal.SIGKILL)
-        pid_file = get_pid_file()
-        if pid_file.exists():
-            pid_file.unlink()
+        get_pid_file().unlink(missing_ok=True)
         click.echo("Control plane stopped")
     else:
         click.echo("Failed to stop control plane", err=True)

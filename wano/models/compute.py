@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 
 @dataclass
@@ -37,61 +37,21 @@ class NodeCapabilities:
             result["ray_node_id"] = self.ray_node_id
         if self.labels:
             result["labels"] = self.labels
-        if "gpu" in self.compute and isinstance(self.compute["gpu"], list):
-            result["compute"]["gpu"] = [
-                {
-                    "name": g.name,
-                    "memory_gb": g.memory_gb,
-                    "fan_percent": g.fan_percent,
-                    "power_usage_w": g.power_usage_w,
-                    "power_cap_w": g.power_cap_w,
-                    "utilization_percent": g.utilization_percent,
-                    "memory_used_mib": g.memory_used_mib,
-                }
-                for g in self.compute["gpu"]
-            ]
-        if "cpu" in self.compute and isinstance(self.compute["cpu"], CPUSpec):
-            c = self.compute["cpu"]
-            result["compute"]["cpu"] = {
-                "cores": c.cores,
-                "memory_gb": c.memory_gb,
-                "name": c.name,
-                "temp_celsius": c.temp_celsius,
-                "power_usage_w": c.power_usage_w,
-                "power_cap_w": c.power_cap_w,
-                "utilization_percent": c.utilization_percent,
-                "memory_used_mib": c.memory_used_mib,
-            }
+        for key, spec in self.compute.items():
+            if isinstance(spec, list):
+                result["compute"][key] = [asdict(g) for g in spec]
+            else:
+                result["compute"][key] = asdict(spec)
         return result
 
     @classmethod
     def from_dict(cls, data: dict) -> "NodeCapabilities":
         compute: dict[str, list[GPUSpec] | CPUSpec] = {}
-        if "gpu" in data.get("compute", {}):
-            compute["gpu"] = [
-                GPUSpec(
-                    name=g["name"],
-                    memory_gb=g["memory_gb"],
-                    fan_percent=g.get("fan_percent"),
-                    power_usage_w=g.get("power_usage_w"),
-                    power_cap_w=g.get("power_cap_w"),
-                    utilization_percent=g.get("utilization_percent"),
-                    memory_used_mib=g.get("memory_used_mib"),
-                )
-                for g in data["compute"]["gpu"]
-            ]
-        if "cpu" in data.get("compute", {}):
-            c = data["compute"]["cpu"]
-            compute["cpu"] = CPUSpec(
-                cores=c["cores"],
-                memory_gb=c["memory_gb"],
-                name=c.get("name"),
-                temp_celsius=c.get("temp_celsius"),
-                power_usage_w=c.get("power_usage_w"),
-                power_cap_w=c.get("power_cap_w"),
-                utilization_percent=c.get("utilization_percent"),
-                memory_used_mib=c.get("memory_used_mib"),
-            )
+        raw = data.get("compute", {})
+        if "gpu" in raw:
+            compute["gpu"] = [GPUSpec(**g) for g in raw["gpu"]]
+        if "cpu" in raw:
+            compute["cpu"] = CPUSpec(**raw["cpu"])
         return cls(
             node_id=data["node_id"],
             compute=compute,

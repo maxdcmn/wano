@@ -227,26 +227,7 @@ async def get_status():
         "compute": db_instance.get_available_compute(),
         "active_nodes": db_instance.get_active_nodes(),
         "nodes": db_instance.get_nodes(),
-        "jobs": [
-            {
-                "job_id": j.job_id,
-                "compute": j.compute,
-                "gpus": j.gpus,
-                "status": j.status.value,
-                "node_ids": j.node_ids,
-                "function_name": j.function_name,
-                "priority": j.priority,
-                "max_retries": j.max_retries,
-                "attempts": j.attempts,
-                "result": j.result,
-                "error": j.error,
-                "timeout_seconds": j.timeout_seconds,
-                "depends_on": j.depends_on,
-                "node_selector": j.node_selector,
-                "namespace": j.namespace,
-            }
-            for j in jobs
-        ],
+        "jobs": [j.to_dict() for j in jobs],
     }
 
 
@@ -314,26 +295,7 @@ async def get_job(job_id: str):
     job = _check_db().get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return {
-        "job_id": job.job_id,
-        "compute": job.compute,
-        "gpus": job.gpus,
-        "status": job.status.value,
-        "node_ids": job.node_ids,
-        "priority": job.priority,
-        "max_retries": job.max_retries,
-        "attempts": job.attempts,
-        "function_name": job.function_name,
-        "created_at": job.created_at.isoformat() if job.created_at else None,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-        "error": job.error,
-        "result": job.result,
-        "timeout_seconds": job.timeout_seconds,
-        "depends_on": job.depends_on,
-        "node_selector": job.node_selector,
-        "namespace": job.namespace,
-    }
+    return job.to_dict()
 
 
 @app.delete("/jobs/{job_id}")
