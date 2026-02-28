@@ -11,7 +11,12 @@ from wano.models.quota import ResourceQuota
 class Database:
     def __init__(self, db_path: Path):
         self.db_path = db_path
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
+
+    def close(self):
+        self._conn.close()
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, column_type: str):
         cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
@@ -19,7 +24,7 @@ class Database:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
     def _init_schema(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS nodes (node_id TEXT PRIMARY KEY, last_seen TIMESTAMP, status TEXT, ray_node_id TEXT);
                 CREATE TABLE IF NOT EXISTS compute (node_id TEXT, type TEXT, spec_json TEXT, PRIMARY KEY (node_id, type), FOREIGN KEY (node_id) REFERENCES nodes(node_id));
@@ -42,12 +47,12 @@ class Database:
             conn.commit()
 
     def _execute(self, query: str, params=()):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             conn.execute(query, params)
             conn.commit()
 
     def register_node(self, node_id: str, capabilities: NodeCapabilities):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             row = conn.execute(
                 "SELECT status, ray_node_id, labels FROM nodes WHERE node_id = ?",
                 (node_id,),
@@ -117,7 +122,7 @@ class Database:
     def get_active_nodes(self, heartbeat_timeout_seconds: int = 30) -> list[str]:
         cutoff = datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)
         cutoff_str = cutoff.isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             active = [
                 row[0]
                 for row in conn.execute(
@@ -128,7 +133,7 @@ class Database:
         return active
 
     def set_node_status(self, node_id: str, status: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             row = conn.execute(
                 "SELECT 1 FROM nodes WHERE node_id = ?",
                 (node_id,),
@@ -143,7 +148,7 @@ class Database:
         return True
 
     def get_nodes(self) -> list[dict]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT node_id, last_seen, status, ray_node_id, labels FROM nodes"
             ).fetchall()
@@ -159,7 +164,7 @@ class Database:
         ]
 
     def get_node_labels(self) -> dict[str, dict[str, str]]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT node_id, labels FROM nodes WHERE labels IS NOT NULL"
             ).fetchall()
@@ -169,7 +174,7 @@ class Database:
         cutoff = datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)
         cutoff_str = cutoff.isoformat()
         result: dict[str, list] = {}
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             for node_id, compute_type, spec_json in conn.execute(
                 "SELECT node_id, type, spec_json FROM compute WHERE node_id IN (SELECT node_id FROM nodes WHERE status = 'active' AND last_seen > ?)",
                 (cutoff_str,),
@@ -185,7 +190,7 @@ class Database:
 
     def get_node_usage(self) -> dict[str, dict[str, int]]:
         usage: dict[str, dict[str, int]] = {}
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT node_ids, compute FROM jobs WHERE status = ?",
                 (JobStatus.RUNNING.value,),
@@ -223,7 +228,7 @@ class Database:
         namespace: str | None = None,
     ) -> Job:
         now = datetime.now(UTC)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             conn.execute(
                 "INSERT INTO jobs (job_id, compute, gpus, status, priority, max_retries, attempts, created_at, function_name, function_code, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -333,7 +338,7 @@ class Database:
         )
 
     def get_job(self, job_id: str) -> Job | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             row = conn.execute(
                 "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace FROM jobs WHERE job_id = ?",
                 (job_id,),
@@ -341,14 +346,14 @@ class Database:
         return self._row_to_job(row) if row else None
 
     def get_all_jobs(self) -> list[Job]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace FROM jobs ORDER BY created_at DESC"
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
     def get_pending_jobs(self) -> list[Job]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace FROM jobs WHERE status = ? ORDER BY priority DESC, created_at ASC",
                 (JobStatus.PENDING.value,),
@@ -357,7 +362,7 @@ class Database:
         return [j for j in jobs if not j.depends_on or self.deps_satisfied(j.depends_on)]
 
     def deps_satisfied(self, dep_ids: list[str]) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             placeholders = ",".join(["?"] * len(dep_ids))
             rows = conn.execute(
                 f"SELECT job_id, status FROM jobs WHERE job_id IN ({placeholders})",
@@ -373,7 +378,7 @@ class Database:
         )
 
     def get_running_jobs(self) -> list[Job]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace FROM jobs WHERE status = ?",
                 (JobStatus.RUNNING.value,),
@@ -386,7 +391,7 @@ class Database:
         if failed_job_id in _visited:
             return
         _visited.add(failed_job_id)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT job_id, depends_on, status FROM jobs WHERE status IN (?, ?)",
                 (JobStatus.PENDING.value, JobStatus.RUNNING.value),
@@ -395,7 +400,10 @@ class Database:
         for row in rows:
             if not row[1]:
                 continue
-            dep_ids = json.loads(row[1])
+            try:
+                dep_ids = json.loads(row[1])
+            except json.JSONDecodeError:
+                continue
             if failed_job_id in dep_ids:
                 dependents.append(row[0])
         for dep_job_id in dependents:
@@ -413,7 +421,7 @@ class Database:
             self.cascade_failure(dep_job_id, _visited)
 
     def validate_depends_on(self, dep_ids: list[str]) -> list[str]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             placeholders = ",".join(["?"] * len(dep_ids))
             rows = conn.execute(
                 f"SELECT job_id FROM jobs WHERE job_id IN ({placeholders})",
@@ -432,7 +440,7 @@ class Database:
         if not node_ids:
             return []
         distinct = sorted(set(node_ids))
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT node_id, ray_node_id FROM nodes WHERE node_id IN ({})".format(
                     ",".join(["?"] * len(distinct))
@@ -445,7 +453,7 @@ class Database:
     def create_or_update_quota(
         self, namespace: str, max_cpu_jobs: int | None = None, max_gpu_jobs: int | None = None
     ):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO namespaces (namespace, max_cpu_jobs, max_gpu_jobs) VALUES (?, ?, ?)",
                 (namespace, max_cpu_jobs, max_gpu_jobs),
@@ -453,7 +461,7 @@ class Database:
             conn.commit()
 
     def get_quota(self, namespace: str) -> ResourceQuota | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             row = conn.execute(
                 "SELECT namespace, max_cpu_jobs, max_gpu_jobs FROM namespaces WHERE namespace = ?",
                 (namespace,),
@@ -463,21 +471,21 @@ class Database:
         return ResourceQuota(namespace=row[0], max_cpu_jobs=row[1], max_gpu_jobs=row[2])
 
     def get_all_quotas(self) -> list[ResourceQuota]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT namespace, max_cpu_jobs, max_gpu_jobs FROM namespaces"
             ).fetchall()
         return [ResourceQuota(namespace=r[0], max_cpu_jobs=r[1], max_gpu_jobs=r[2]) for r in rows]
 
     def delete_quota(self, namespace: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             cursor = conn.execute("DELETE FROM namespaces WHERE namespace = ?", (namespace,))
             conn.commit()
         return cursor.rowcount > 0
 
     def get_namespace_usage(self, namespace: str) -> dict[str, int]:
         usage: dict[str, int] = {"cpu": 0, "gpu": 0}
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn as conn:
             rows = conn.execute(
                 "SELECT compute FROM jobs WHERE status = ? AND namespace = ?",
                 (JobStatus.RUNNING.value, namespace),

@@ -15,6 +15,7 @@ def db():
         db_path = Path(f.name)
     db = Database(db_path)
     yield db
+    db.close()
     db_path.unlink(missing_ok=True)
 
 

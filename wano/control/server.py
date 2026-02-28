@@ -24,6 +24,7 @@ from wano.control.state import running_tasks, tasks_lock
 from wano.execution.runner import execute_on_ray
 from wano.models.compute import NodeCapabilities
 from wano.models.job import JobStatus
+from wano.models.quota import ResourceQuota
 
 
 class SubmitRequest(BaseModel):
@@ -375,14 +376,23 @@ def _retry_pending_jobs():
     available_compute = db.get_available_compute()
     node_usage = db.get_node_usage()
     node_labels = db.get_node_labels()
+    quota_cache: dict[str, ResourceQuota | None] = {}
+    usage_cache: dict[str, dict[str, int]] = {}
     for job in pending_jobs:
-        quota = db.get_quota(job.namespace) if job.namespace else None
-        ns_usage = db.get_namespace_usage(job.namespace) if job.namespace else None
+        ns = job.namespace
+        if ns and ns not in quota_cache:
+            quota_cache[ns] = db.get_quota(ns)
+            usage_cache[ns] = db.get_namespace_usage(ns)
+        quota = quota_cache.get(ns) if ns else None
+        ns_usage = usage_cache.get(ns) if ns else None
         node_ids = scheduler.schedule_job(
             job, available_compute, node_usage, node_labels, quota=quota, namespace_usage=ns_usage
         )
         if node_ids:
             db.assign_job(job.job_id, node_ids)
+            if ns and ns in usage_cache:
+                key = "gpu" if job.compute == "gpu" else "cpu"
+                usage_cache[ns][key] = usage_cache[ns].get(key, 0) + 1
             ray_node_ids = db.get_ray_node_ids(node_ids)
             threading.Thread(
                 target=_run_job,
@@ -438,6 +448,9 @@ def shutdown():
     if zeroconf_instance:
         with contextlib.suppress(Exception):
             zeroconf_instance.close()
+    if db:
+        with contextlib.suppress(Exception):
+            db.close()
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8000):
