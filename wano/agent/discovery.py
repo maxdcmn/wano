@@ -24,8 +24,10 @@ class ControlPlaneListener(ServiceListener):
 
 def discover_control_plane(timeout: float = 5.0) -> str | None:
     zeroconf = Zeroconf()
-    listener = ControlPlaneListener()
-    ServiceBrowser(zeroconf, "_wano._tcp.local.", listener)
-    listener.found.wait(timeout)
-    zeroconf.close()
-    return listener.control_plane_url
+    try:
+        listener = ControlPlaneListener()
+        ServiceBrowser(zeroconf, "_wano._tcp.local.", listener)
+        listener.found.wait(timeout)
+        return listener.control_plane_url
+    finally:
+        zeroconf.close()

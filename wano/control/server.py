@@ -379,6 +379,9 @@ def _retry_pending_jobs():
     quota_cache: dict[str, ResourceQuota | None] = {}
     usage_cache: dict[str, dict[str, int]] = {}
     for job in pending_jobs:
+        with tasks_lock:
+            if job.job_id in running_tasks:
+                continue
         ns = job.namespace
         if ns and ns not in quota_cache:
             quota_cache[ns] = db.get_quota(ns)

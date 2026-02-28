@@ -54,7 +54,12 @@ class RayManager:
                 if "already been initialized" not in str(e).lower():
                     raise
         self.is_running = True
-        self.address = self.get_address()
+        try:
+            self.address = self.get_address()
+        except Exception:
+            ray.shutdown()
+            self.is_running = False
+            raise
 
     def stop(self):
         if self.is_running:

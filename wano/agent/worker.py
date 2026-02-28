@@ -90,10 +90,10 @@ class NodeAgent:
                     json=self.capabilities.to_dict(),
                     timeout=5,
                 ).raise_for_status()
-            except (requests.exceptions.RequestException, RuntimeError) as e:
-                print(f"Heartbeat failed: {e}")
             except KeyboardInterrupt:
                 break
+            except Exception as e:
+                print(f"Heartbeat failed: {e}")
             time.sleep(10)
 
     def stop(self):
