@@ -85,6 +85,12 @@ def _check_db() -> Database:
     return db
 
 
+def _cancel_tasks(job_id: str):
+    with tasks_lock:
+        for task in running_tasks.pop(job_id, []):
+            ray.cancel(task, force=True)
+
+
 @app.post("/register")
 async def register_node(capabilities: dict[str, Any]):
     db_instance = _check_db()
@@ -306,11 +312,7 @@ async def cancel_job(job_id: str):
     if job.status not in (JobStatus.RUNNING, JobStatus.PENDING):
         raise HTTPException(status_code=400, detail=f"Job is {job.status.value}, cannot cancel")
     if job.status == JobStatus.RUNNING:
-        with tasks_lock:
-            tasks = running_tasks.get(job_id, [])
-            for task in tasks:
-                ray.cancel(task, force=True)
-            running_tasks.pop(job_id, None)
+        _cancel_tasks(job_id)
     db_instance = _check_db()
     db_instance.cancel_job(job_id)
     db_instance.cascade_failure(job_id)
@@ -386,11 +388,7 @@ def _check_timed_out_jobs():
             continue
         elapsed = (datetime.now(UTC) - job.started_at).total_seconds()
         if elapsed > job.timeout_seconds:
-            with tasks_lock:
-                tasks = running_tasks.get(job.job_id, [])
-                for task in tasks:
-                    ray.cancel(task, force=True)
-                running_tasks.pop(job.job_id, None)
+            _cancel_tasks(job.job_id)
             error_msg = f"Job {job.job_id} timed out after {job.timeout_seconds} seconds"
             log_store.append_lines(job.job_id, [f"TIMEOUT: {error_msg}"])
             db.fail_job_timeout(job.job_id, error=error_msg)

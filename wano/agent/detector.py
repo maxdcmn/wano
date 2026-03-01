@@ -147,11 +147,10 @@ def detect_cpu() -> CPUSpec:
     utilization = None
     memory_used = None
     mem = psutil.virtual_memory()
-    if psutil:
-        with contextlib.suppress(Exception):
-            utilization = psutil.cpu_percent(interval=0.1)
-        with contextlib.suppress(Exception):
-            memory_used = int(mem.used // (1024**2))
+    with contextlib.suppress(Exception):
+        utilization = psutil.cpu_percent(interval=0.1)
+    with contextlib.suppress(Exception):
+        memory_used = int(mem.used // (1024**2))
     return CPUSpec(
         cores=cores,
         memory_gb=mem.total // (1024**3),
