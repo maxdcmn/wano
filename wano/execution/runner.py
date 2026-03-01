@@ -40,25 +40,15 @@ def submit_job(
         "function_code": base64.b64encode(function_code_bytes).decode("utf-8"),
         "priority": priority,
         "max_retries": max_retries,
+        "timeout_seconds": timeout_seconds,
+        "depends_on": depends_on,
+        "node_selector": node_selector,
+        "namespace": namespace,
+        "args": json.dumps(args) if args is not None else None,
+        "kwargs": json.dumps(kwargs) if kwargs is not None else None,
+        "env_vars": json.dumps(env_vars) if env_vars is not None else None,
     }
-    if timeout_seconds is not None:
-        payload["timeout_seconds"] = timeout_seconds
-    if depends_on:
-        payload["depends_on"] = depends_on
-    if node_selector:
-        payload["node_selector"] = node_selector
-    if namespace:
-        payload["namespace"] = namespace
-    if args is not None:
-        payload["args"] = json.dumps(args)
-    if kwargs is not None:
-        payload["kwargs"] = json.dumps(kwargs)
-    if env_vars is not None:
-        payload["env_vars"] = json.dumps(env_vars)
-    response = requests.post(
-        f"{control_plane_url}/submit",
-        json=payload,
-    )
+    response = requests.post(f"{control_plane_url}/submit", json=payload)
     response.raise_for_status()
     job_id = response.json().get("job_id")
     if isinstance(job_id, str):

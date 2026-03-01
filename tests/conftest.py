@@ -1,12 +1,29 @@
 import os
 import tempfile
 import warnings
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 import ray
 
 from wano.control.db import Database
+from wano.models.job import Job, JobStatus
+
+
+def make_job(
+    job_id, compute="cpu", gpus=None, function_name=None, function_code="def f(): pass", **kwargs
+):
+    return Job(
+        job_id=job_id,
+        compute=compute,
+        gpus=gpus,
+        function_name=function_name,
+        function_code=function_code,
+        status=JobStatus.PENDING,
+        created_at=datetime.now(UTC),
+        **kwargs,
+    )
 
 
 @pytest.fixture

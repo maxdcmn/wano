@@ -37,11 +37,7 @@ def detect_gpus() -> list[GPUSpec]:
                 pynvml.nvmlInit()
                 for i in range(pynvml.nvmlDeviceGetCount()):
                     handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-                    fan = None
-                    power_usage = None
-                    power_cap = None
-                    utilization = None
-                    memory_used = None
+                    fan = power_usage = power_cap = utilization = memory_used = mem_info = None
                     with contextlib.suppress(NVMLError):
                         fan = pynvml.nvmlDeviceGetFanSpeed(handle)
                     with contextlib.suppress(NVMLError):
@@ -52,7 +48,6 @@ def detect_gpus() -> list[GPUSpec]:
                     with contextlib.suppress(NVMLError):
                         util = pynvml.nvmlDeviceGetUtilizationRates(handle)
                         utilization = float(util.gpu)
-                    mem_info = None
                     with contextlib.suppress(NVMLError):
                         mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
                         memory_used = int(mem_info.used // (1024**2))
@@ -110,7 +105,7 @@ def _get_cpu_metrics() -> tuple[float | None, float | None, float | None]:
                         power_max = total * 5.0
     except (ImportError, RuntimeError, json.JSONDecodeError):
         pass
-    if temp is None and psutil:
+    if temp is None:
         with contextlib.suppress(Exception):
             if hasattr(psutil, "sensors_temperatures"):
                 temps = psutil.sensors_temperatures()
@@ -144,8 +139,7 @@ def detect_cpu() -> CPUSpec:
     if not cpu_name:
         cpu_name = platform.processor() or platform.machine()
     temp, power, power_max = _get_cpu_metrics()
-    utilization = None
-    memory_used = None
+    utilization = memory_used = None
     mem = psutil.virtual_memory()
     with contextlib.suppress(Exception):
         utilization = psutil.cpu_percent(interval=0.1)

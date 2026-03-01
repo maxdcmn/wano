@@ -203,19 +203,13 @@ def run(
         "env_vars": json.dumps(env_vars) if env_vars else None,
         "priority": priority,
         "max_retries": retries,
+        "timeout_seconds": timeout_seconds,
+        "depends_on": list(depends_on) if depends_on else None,
+        "node_selector": _parse_kv(node_selector, "node-selector") if node_selector else None,
+        "namespace": namespace,
+        "args": json.dumps(parsed_args) if parsed_args is not None else None,
+        "kwargs": json.dumps(parsed_kwargs) if parsed_kwargs is not None else None,
     }
-    if timeout_seconds is not None:
-        payload["timeout_seconds"] = timeout_seconds
-    if depends_on:
-        payload["depends_on"] = list(depends_on)
-    if node_selector:
-        payload["node_selector"] = _parse_kv(node_selector, "node-selector")
-    if namespace:
-        payload["namespace"] = namespace
-    if parsed_args is not None:
-        payload["args"] = json.dumps(parsed_args)
-    if parsed_kwargs is not None:
-        payload["kwargs"] = json.dumps(parsed_kwargs)
     response = requests.post(f"{control_plane_url}/submit", json=payload)
     response.raise_for_status()
     job_id = response.json()["job_id"]
@@ -282,7 +276,6 @@ def _get_real_time_gpu_stats() -> tuple[list[float], list[tuple[int | None, int 
                 power_usage = power_cap = None
                 with contextlib.suppress(NVMLError):
                     power_usage = pynvml.nvmlDeviceGetPowerUsage(handle) // 1000
-                with contextlib.suppress(NVMLError):
                     power_cap = (
                         pynvml.nvmlDeviceGetPowerManagementLimitConstraints(handle)[1] // 1000
                     )
@@ -368,9 +361,8 @@ def _handle_connection_error(e: requests.exceptions.RequestException, control_pl
     sys.exit(1)
 
 
-def _sep(chars: str, borders: str, widths_list: list[int] | None = None, char: str = "-") -> str:
-    w = widths_list or [4, 4, 5, 8, 6]
-    return borders[0] + chars.join(char * (width + 2) for width in w) + borders[-1]
+def _sep(widths: list[int], border: str = "|", char: str = "-") -> str:
+    return border + "+".join(char * (w + 2) for w in widths) + border
 
 
 @cli.command()
@@ -471,8 +463,8 @@ def status(control_plane_url: str):
         status_w, temp_w, power_w = _col_width(6, 6), _col_width(4, 6), _col_width(5, 10)
         last_col_w = max(temp_w + status_w + 1, power_w)
         compute_widths = [node_name_w, type_usage_w, last_col_w]
-        sep = _sep("+", "||", compute_widths)
-        sep_border = _sep("+", "++", compute_widths)
+        sep = _sep(compute_widths)
+        sep_border = _sep(compute_widths, "+")
         header_width = len(sep) - 2
         click.echo(datetime.now().strftime("%a %b %d %H:%M:%S %Y"))
         click.echo("+" + "-" * header_width + "+")
@@ -488,7 +480,7 @@ def status(control_plane_url: str):
         click.echo(
             f"| {'Name':<{node_name_w}} | {'Memory-Usage':<{type_usage_w}} | {power_header} |"
         )
-        click.echo(_sep("+", "||", compute_widths).replace("-", "="))
+        click.echo(_sep(compute_widths, char="="))
         for node_id, name, type_usage, memory, temp, power, status in compute_rows:
             temp_status_str = f"{_truncate(str(temp), temp_w):<{temp_w}} {_truncate(str(status), status_w):<{status_w}}"
             click.echo(
@@ -529,8 +521,8 @@ def status(control_plane_url: str):
             job_widths[1] += extra // 3
             job_widths[2] += extra - extra // 3
         job_id_w, resources_w, nodes_w, status_w = job_widths
-        sep_jobs = _sep("+", "++", job_widths)
-        sep_jobs_header = _sep("+", "||", job_widths).replace("-", "=")
+        sep_jobs = _sep(job_widths, "+")
+        sep_jobs_header = _sep(job_widths, char="=")
         click.echo("\n" + sep_jobs)
         click.echo(
             f"| {'Job ID':<{job_id_w}} | {'Resources':<{resources_w}} | {'Nodes':<{nodes_w}} | {'Status':<{status_w}} |"

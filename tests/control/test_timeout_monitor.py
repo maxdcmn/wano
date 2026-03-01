@@ -1,13 +1,15 @@
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+from conftest import make_job
+
 import wano.control.server as server_mod
 from wano.control.server import _check_timed_out_jobs
 from wano.models.job import JobStatus
 
 
 def test_check_timed_out_jobs_cancels_expired(db):
-    db.create_job("job-expired", "cpu", None, None, "def f(): pass", timeout_seconds=10)
+    db.create_job(make_job("job-expired", timeout_seconds=10))
     db.assign_job("job-expired", ["node1"])
 
     past = (datetime.now(UTC) - timedelta(seconds=20)).isoformat()
@@ -28,7 +30,7 @@ def test_check_timed_out_jobs_cancels_expired(db):
 
 
 def test_check_timed_out_jobs_ignores_no_timeout(db):
-    db.create_job("job-no-to", "cpu", None, None, "def f(): pass")
+    db.create_job(make_job("job-no-to"))
     db.assign_job("job-no-to", ["node1"])
 
     original_db = server_mod.db

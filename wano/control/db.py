@@ -26,6 +26,20 @@ class Database:
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
+    _MIGRATIONS = [
+        ("nodes", "ray_node_id", "TEXT"),
+        ("jobs", "function_name", "TEXT"),
+        ("jobs", "env_vars", "TEXT"),
+        ("jobs", "priority", "INTEGER DEFAULT 0"),
+        ("jobs", "max_retries", "INTEGER DEFAULT 0"),
+        ("jobs", "attempts", "INTEGER DEFAULT 0"),
+        ("jobs", "timeout_seconds", "INTEGER"),
+        ("jobs", "depends_on", "TEXT"),
+        ("nodes", "labels", "TEXT"),
+        ("jobs", "node_selector", "TEXT"),
+        ("jobs", "namespace", "TEXT"),
+    ]
+
     def _init_schema(self):
         with self._conn as conn:
             conn.executescript("""
@@ -33,17 +47,8 @@ class Database:
                 CREATE TABLE IF NOT EXISTS compute (node_id TEXT, type TEXT, spec_json TEXT, PRIMARY KEY (node_id, type), FOREIGN KEY (node_id) REFERENCES nodes(node_id));
                 CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, compute TEXT, gpus INTEGER, status TEXT, node_ids TEXT, priority INTEGER DEFAULT 0, max_retries INTEGER DEFAULT 0, attempts INTEGER DEFAULT 0, created_at TIMESTAMP, started_at TIMESTAMP, completed_at TIMESTAMP, function_name TEXT, function_code TEXT, error TEXT, result TEXT, args TEXT, kwargs TEXT, env_vars TEXT);
             """)
-            self._ensure_column(conn, "nodes", "ray_node_id", "TEXT")
-            self._ensure_column(conn, "jobs", "function_name", "TEXT")
-            self._ensure_column(conn, "jobs", "env_vars", "TEXT")
-            self._ensure_column(conn, "jobs", "priority", "INTEGER DEFAULT 0")
-            self._ensure_column(conn, "jobs", "max_retries", "INTEGER DEFAULT 0")
-            self._ensure_column(conn, "jobs", "attempts", "INTEGER DEFAULT 0")
-            self._ensure_column(conn, "jobs", "timeout_seconds", "INTEGER")
-            self._ensure_column(conn, "jobs", "depends_on", "TEXT")
-            self._ensure_column(conn, "nodes", "labels", "TEXT")
-            self._ensure_column(conn, "jobs", "node_selector", "TEXT")
-            self._ensure_column(conn, "jobs", "namespace", "TEXT")
+            for table, column, col_type in self._MIGRATIONS:
+                self._ensure_column(conn, table, column, col_type)
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS namespaces (namespace TEXT PRIMARY KEY, max_cpu_jobs INTEGER, max_gpu_jobs INTEGER)"
             )
@@ -189,67 +194,31 @@ class Database:
                 usage[node_id][key] += 1
         return usage
 
-    def create_job(
-        self,
-        job_id: str,
-        compute: str,
-        gpus: int | None,
-        function_name: str | None,
-        function_code: str,
-        args: str | None = None,
-        kwargs: str | None = None,
-        env_vars: str | None = None,
-        priority: int = 0,
-        max_retries: int = 0,
-        timeout_seconds: int | None = None,
-        depends_on: list[str] | None = None,
-        node_selector: dict[str, str] | None = None,
-        namespace: str | None = None,
-    ) -> Job:
-        now = datetime.now(UTC)
+    def create_job(self, job: Job):
         with self._conn as conn:
             conn.execute(
                 "INSERT INTO jobs (job_id, compute, gpus, status, priority, max_retries, attempts, created_at, function_name, function_code, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    job_id,
-                    compute,
-                    gpus,
-                    JobStatus.PENDING.value,
-                    priority,
-                    max_retries,
-                    0,
-                    now.isoformat(),
-                    function_name,
-                    function_code,
-                    args,
-                    kwargs,
-                    env_vars,
-                    timeout_seconds,
-                    json.dumps(depends_on) if depends_on else None,
-                    json.dumps(node_selector) if node_selector else None,
-                    namespace,
+                    job.job_id,
+                    job.compute,
+                    job.gpus,
+                    job.status.value,
+                    job.priority,
+                    job.max_retries,
+                    job.attempts,
+                    job.created_at.isoformat() if job.created_at else None,
+                    job.function_name,
+                    job.function_code,
+                    job.args,
+                    job.kwargs,
+                    job.env_vars,
+                    job.timeout_seconds,
+                    json.dumps(job.depends_on) if job.depends_on else None,
+                    json.dumps(job.node_selector) if job.node_selector else None,
+                    job.namespace,
                 ),
             )
             conn.commit()
-        return Job(
-            job_id=job_id,
-            compute=compute,
-            gpus=gpus,
-            status=JobStatus.PENDING,
-            priority=priority,
-            max_retries=max_retries,
-            attempts=0,
-            created_at=now,
-            function_name=function_name,
-            function_code=function_code,
-            args=args,
-            kwargs=kwargs,
-            env_vars=env_vars,
-            timeout_seconds=timeout_seconds,
-            depends_on=depends_on,
-            node_selector=node_selector,
-            namespace=namespace,
-        )
 
     def assign_job(self, job_id: str, node_ids: list[str]):
         self._execute(
@@ -461,13 +430,11 @@ class Database:
         return cursor.rowcount > 0
 
     def get_namespace_usage(self, namespace: str) -> dict[str, int]:
-        usage: dict[str, int] = {"cpu": 0, "gpu": 0}
+        usage = {"cpu": 0, "gpu": 0}
         with self._conn as conn:
-            rows = conn.execute(
-                "SELECT compute FROM jobs WHERE status = ? AND namespace = ?",
+            for compute, count in conn.execute(
+                "SELECT compute, COUNT(*) FROM jobs WHERE status = ? AND namespace = ? GROUP BY compute",
                 (JobStatus.RUNNING.value, namespace),
-            ).fetchall()
-        for (compute,) in rows:
-            key = "gpu" if compute == "gpu" else "cpu"
-            usage[key] += 1
+            ).fetchall():
+                usage["gpu" if compute == "gpu" else "cpu"] = count
         return usage

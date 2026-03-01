@@ -5,6 +5,7 @@ import threading
 import time
 import traceback
 import uuid
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from wano.control.scheduler import Scheduler
 from wano.control.state import running_tasks, tasks_lock
 from wano.execution.runner import execute_on_ray
 from wano.models.compute import NodeCapabilities
-from wano.models.job import JobStatus
+from wano.models.job import Job, JobStatus
 from wano.models.quota import ResourceQuota
 
 
@@ -108,32 +109,21 @@ async def heartbeat(capabilities: dict[str, Any]):
     return {"status": "ok"}
 
 
-def _run_job(
-    job_id: str,
-    function_code: str,
-    function_name: str | None,
-    node_ids: list[str],
-    ray_node_ids: list[str | None] | None,
-    compute: str,
-    gpus: int | None,
-    args: str | None = None,
-    kwargs: str | None = None,
-    env_vars: str | None = None,
-    timeout_seconds: int | None = None,
-):
+def _run_job(job: Job, node_ids: list[str], ray_node_ids: list[str | None] | None):
+    job_id = job.job_id
     try:
         result = execute_on_ray(
             job_id,
-            function_code,
+            job.function_code or "",
             node_ids,
-            compute,
-            gpus,
-            args,
-            kwargs,
-            env_vars,
-            function_name=function_name,
+            job.compute,
+            job.gpus,
+            job.args,
+            job.kwargs,
+            job.env_vars,
+            function_name=job.function_name,
             ray_node_ids=ray_node_ids,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=job.timeout_seconds,
         )
         if db:
             result_json = json.dumps(result) if result is not None else None
@@ -149,8 +139,8 @@ def _run_job(
         log_store.append_lines(job_id, [f"ERROR: {error_msg}"])
         if db:
             db.complete_job(job_id, error=error_msg)
-            job = db.get_job(job_id)
-            if job and job.status == JobStatus.FAILED:
+            updated = db.get_job(job_id)
+            if updated and updated.status == JobStatus.FAILED:
                 db.cascade_failure(job_id)
 
 
@@ -162,16 +152,17 @@ async def submit_job(body: SubmitRequest, background_tasks: BackgroundTasks):
         missing = db.validate_depends_on(body.depends_on)
         if missing:
             raise HTTPException(status_code=400, detail=f"Unknown dependency job IDs: {missing}")
-    job_id = str(uuid.uuid4())
-    job = db.create_job(
-        job_id,
-        body.compute,
-        body.gpus,
-        body.function_name,
-        body.function_code,
-        body.args,
-        body.kwargs,
-        body.env_vars,
+    job = Job(
+        job_id=str(uuid.uuid4()),
+        compute=body.compute,
+        gpus=body.gpus,
+        status=JobStatus.PENDING,
+        created_at=datetime.now(UTC),
+        function_name=body.function_name,
+        function_code=body.function_code,
+        args=body.args,
+        kwargs=body.kwargs,
+        env_vars=body.env_vars,
         priority=body.priority,
         max_retries=body.max_retries,
         timeout_seconds=body.timeout_seconds,
@@ -179,8 +170,9 @@ async def submit_job(body: SubmitRequest, background_tasks: BackgroundTasks):
         node_selector=body.node_selector,
         namespace=body.namespace,
     )
+    db.create_job(job)
     if body.depends_on and not db.deps_satisfied(body.depends_on):
-        return {"status": "pending", "job_id": job_id, "message": "Waiting on dependencies"}
+        return {"status": "pending", "job_id": job.job_id, "message": "Waiting on dependencies"}
     available_compute = db.get_available_compute()
     node_usage = db.get_node_usage()
     node_labels = db.get_node_labels()
@@ -190,24 +182,11 @@ async def submit_job(body: SubmitRequest, background_tasks: BackgroundTasks):
         job, available_compute, node_usage, node_labels, quota=quota, namespace_usage=ns_usage
     )
     if not node_ids:
-        return {"status": "pending", "job_id": job_id, "message": "No available compute"}
-    db.assign_job(job_id, node_ids)
+        return {"status": "pending", "job_id": job.job_id, "message": "No available compute"}
+    db.assign_job(job.job_id, node_ids)
     ray_node_ids = db.get_ray_node_ids(node_ids)
-    background_tasks.add_task(
-        _run_job,
-        job_id,
-        body.function_code,
-        body.function_name,
-        node_ids,
-        ray_node_ids,
-        body.compute,
-        body.gpus,
-        body.args,
-        body.kwargs,
-        body.env_vars,
-        body.timeout_seconds,
-    )
-    return {"status": "submitted", "job_id": job_id, "node_ids": node_ids}
+    background_tasks.add_task(_run_job, job, node_ids, ray_node_ids)
+    return {"status": "submitted", "job_id": job.job_id, "node_ids": node_ids}
 
 
 @app.get("/compute")
@@ -262,16 +241,7 @@ async def set_quota(body: QuotaRequest):
 async def list_quotas():
     db_instance = _check_db()
     quotas = db_instance.get_all_quotas()
-    return {
-        "quotas": [
-            {
-                "namespace": q.namespace,
-                "max_cpu_jobs": q.max_cpu_jobs,
-                "max_gpu_jobs": q.max_gpu_jobs,
-            }
-            for q in quotas
-        ]
-    }
+    return {"quotas": [asdict(q) for q in quotas]}
 
 
 @app.get("/quotas/{namespace}")
@@ -281,12 +251,7 @@ async def get_quota_detail(namespace: str):
     if not quota:
         raise HTTPException(status_code=404, detail="Quota not found")
     usage = db_instance.get_namespace_usage(namespace)
-    return {
-        "namespace": quota.namespace,
-        "max_cpu_jobs": quota.max_cpu_jobs,
-        "max_gpu_jobs": quota.max_gpu_jobs,
-        "usage": usage,
-    }
+    return {**asdict(quota), "usage": usage}
 
 
 @app.delete("/quotas/{namespace}")
@@ -362,21 +327,7 @@ def _retry_pending_jobs():
                 usage_cache[ns][key] = usage_cache[ns].get(key, 0) + 1
             ray_node_ids = db.get_ray_node_ids(node_ids)
             threading.Thread(
-                target=_run_job,
-                args=(
-                    job.job_id,
-                    job.function_code or "",
-                    job.function_name,
-                    node_ids,
-                    ray_node_ids,
-                    job.compute,
-                    job.gpus,
-                    job.args,
-                    job.kwargs,
-                    job.env_vars,
-                    job.timeout_seconds,
-                ),
-                daemon=True,
+                target=_run_job, args=(job, node_ids, ray_node_ids), daemon=True
             ).start()
 
 
