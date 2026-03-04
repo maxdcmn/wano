@@ -162,6 +162,9 @@ def join(control_plane_url: str, label: tuple[str, ...]):
 @click.option("--priority", type=int, default=0, show_default=True)
 @click.option("--retries", type=int, default=0, show_default=True)
 @click.option("--timeout", "timeout_seconds", type=int, default=None, help="Job timeout in seconds")
+@click.option(
+    "--ttl", "ttl_seconds", type=int, default=None, help="Auto-delete job after N seconds"
+)
 @click.option("--depends-on", multiple=True, help="Job ID this job depends on (repeatable)")
 @click.option(
     "--node-selector", multiple=True, help="Required node label (format: KEY=VALUE, repeatable)"
@@ -179,6 +182,7 @@ def run(
     priority: int,
     retries: int,
     timeout_seconds: int | None,
+    ttl_seconds: int | None,
     depends_on: tuple[str, ...],
     namespace: str | None,
     node_selector: tuple[str, ...],
@@ -204,6 +208,7 @@ def run(
         "priority": priority,
         "max_retries": retries,
         "timeout_seconds": timeout_seconds,
+        "ttl_seconds": ttl_seconds,
         "depends_on": list(depends_on) if depends_on else None,
         "node_selector": _parse_kv(node_selector, "node-selector") if node_selector else None,
         "namespace": namespace,
@@ -342,6 +347,12 @@ def _format_temp(temp: float | None) -> str:
     return f"{temp:.0f}°C" if temp is not None else "N/A"
 
 
+def _format_resources(compute: str, gpus: int | None) -> str:
+    if compute == "gpu":
+        return f"{gpus} GPUs" if gpus and gpus > 1 else "1 GPU"
+    return "CPU"
+
+
 def _format_job_result(value: str | None) -> str:
     if value is None:
         return "None"
@@ -365,196 +376,202 @@ def _sep(widths: list[int], border: str = "|", char: str = "-") -> str:
     return border + "+".join(char * (w + 2) for w in widths) + border
 
 
+def _render_status(control_plane_url: str):
+    data = requests.get(f"{control_plane_url}/status", timeout=5).json()
+    jobs = data.get("jobs", [])
+    current_hostname = socket.gethostname()
+    active_nodes = set(data.get("active_nodes", []))
+    nodes = data.get("nodes", [])
+    node_status = next(
+        (n.get("status") for n in nodes if n.get("node_id") == current_hostname), None
+    )
+    if node_status and node_status != "active":
+        joined_label = f"Yes ({node_status})"
+    else:
+        joined_label = "Yes" if current_hostname in active_nodes else "No"
+    compute = data.get("compute", {})
+    real_time_cpu = _get_real_time_cpu_usage()
+    real_time_gpus, _ = _get_real_time_gpu_stats()
+    node_usage: dict[str, dict[str, int]] = {}
+    for job in jobs:
+        if job.get("status") != "running":
+            continue
+        compute_type = job.get("compute", "cpu")
+        count = job.get("gpus", 1) if compute_type == "gpu" else 1
+        for node_id in _parse_node_ids(job.get("node_ids")):
+            node_usage.setdefault(node_id, {"cpu": 0, "gpu": 0})[compute_type] += count
+    compute_rows = []
+    all_node_ids_in_compute = set()
+    for compute_type in ["gpu", "cpu"]:
+        if compute_type not in compute:
+            continue
+        items = compute[compute_type]
+        if compute_type == "gpu":
+            node_map: dict[str, list] = {}
+            for gpu in items:
+                if isinstance(gpu, list):
+                    node_id = gpu[0].get("node_id", "unknown") if gpu else "unknown"
+                    node_map.setdefault(node_id, []).extend(gpu)
+                else:
+                    node_id = gpu.get("node_id", "unknown")
+                    node_map.setdefault(node_id, []).append(gpu)
+            for node_id, gpu_list in node_map.items():
+                all_node_ids_in_compute.add(node_id)
+                gpu, total = gpu_list[0] if gpu_list else {}, len(gpu_list)
+                if gpu.get("utilization_percent") is not None:
+                    used = int((gpu.get("utilization_percent") / 100.0) * total) if total > 0 else 0
+                else:
+                    used = _calc_used(
+                        node_id, current_hostname, total, real_time_gpus, "gpu", node_usage
+                    )
+                compute_rows.append(
+                    (
+                        node_id,
+                        gpu.get("name", "GPU"),
+                        f"GPU {_progress_bar(used, total)}",
+                        _format_memory(gpu.get("memory_gb"), gpu.get("memory_used_mib")),
+                        "N/A",
+                        _format_power(gpu.get("power_usage_w"), gpu.get("power_cap_w")),
+                        f"{used}/{total}",
+                    )
+                )
+        else:
+            for cpu in items:
+                node_id, cores = cpu.get("node_id", "unknown"), cpu.get("cores", 0)
+                all_node_ids_in_compute.add(node_id)
+                if cpu.get("utilization_percent") is not None:
+                    used = int((cpu.get("utilization_percent") / 100.0) * cores)
+                else:
+                    used = _calc_used(
+                        node_id, current_hostname, cores, real_time_cpu, "cpu", node_usage
+                    )
+                compute_rows.append(
+                    (
+                        node_id,
+                        cpu.get("name") or f"{cores} cores",
+                        f"CPU {_progress_bar(used, cores)}",
+                        _format_memory(cpu.get("memory_gb"), cpu.get("memory_used_mib")),
+                        _format_temp(cpu.get("temp_celsius")),
+                        _format_power(cpu.get("power_usage_w"), cpu.get("power_cap_w")),
+                        f"{used}/{cores}",
+                    )
+                )
+
+    def _col_width(idx: int, default: int = 0) -> int:
+        return max(default, max((len(str(r[idx])) for r in compute_rows), default=0))
+
+    node_name_w = max(10, max(_col_width(0), _col_width(1)))
+    type_usage_w = max(15, max(_col_width(2), _col_width(3)))
+    status_w, temp_w, power_w = _col_width(6, 6), _col_width(4, 6), _col_width(5, 10)
+    last_col_w = max(temp_w + status_w + 1, power_w)
+    compute_widths = [node_name_w, type_usage_w, last_col_w]
+    sep = _sep(compute_widths)
+    sep_border = _sep(compute_widths, "+")
+    header_width = len(sep) - 2
+    click.echo(datetime.now().strftime("%a %b %d %H:%M:%S %Y"))
+    click.echo("+" + "-" * header_width + "+")
+    header_line1 = f"Wano {wano.__version__}"
+    header_line2 = f"Node Joined: {joined_label}"
+    remaining_width = header_width - len(header_line1) - 5
+    click.echo(f"| {header_line1:<{len(header_line1)}} | {header_line2:<{remaining_width}} |")
+    click.echo(sep_border)
+    click.echo(
+        f"| {'Node':<{node_name_w}} | {'Type Usage':<{type_usage_w}} | {'Temp':<{temp_w}} {'Status':<{status_w}} |"
+    )
+    power_header = "Power".ljust(last_col_w)
+    click.echo(f"| {'Name':<{node_name_w}} | {'Memory-Usage':<{type_usage_w}} | {power_header} |")
+    click.echo(_sep(compute_widths, char="="))
+    for node_id, name, type_usage, memory, temp, power, status in compute_rows:
+        temp_status_str = f"{_truncate(str(temp), temp_w):<{temp_w}} {_truncate(str(status), status_w):<{status_w}}"
+        click.echo(
+            f"| {_truncate(str(node_id), node_name_w):<{node_name_w}} | "
+            f"{_truncate(str(type_usage), type_usage_w):<{type_usage_w}} | "
+            f"{temp_status_str:<{last_col_w}} |"
+        )
+        power_formatted = _truncate(str(power), last_col_w).ljust(last_col_w)
+        click.echo(
+            f"| {_truncate(str(name), node_name_w):<{node_name_w}} | "
+            f"{_truncate(str(memory), type_usage_w):<{type_usage_w}} | "
+            f"{power_formatted} |"
+        )
+    click.echo(sep_border)
+    compute_table_width = len(sep)
+    job_headers = ["Job ID", "Resources", "Nodes", "Status"]
+    if jobs:
+        max_job_id = max(len(j["job_id"][:8]) for j in jobs)
+        max_status = max(len(j.get("status", "")) for j in jobs)
+        max_nodes = max(
+            len(
+                ", ".join((node_ids := _parse_node_ids(j.get("node_ids")))[:2])
+                + ("..." if len(node_ids) > 2 else "")
+            )
+            for j in jobs
+        )
+    else:
+        max_job_id, max_status, max_nodes = 8, 0, 0
+    job_widths = [
+        max(max_job_id, len(job_headers[0])),
+        max(8, len(job_headers[1])),
+        max(max_nodes, len(job_headers[2])),
+        max(max_status, len(job_headers[3])),
+    ]
+    target_content_width = compute_table_width - 3 * len(job_headers) - 1
+    if sum(job_widths) < target_content_width:
+        extra = target_content_width - sum(job_widths)
+        job_widths[1] += extra // 3
+        job_widths[2] += extra - extra // 3
+    job_id_w, resources_w, nodes_w, status_w = job_widths
+    sep_jobs = _sep(job_widths, "+")
+    sep_jobs_header = _sep(job_widths, char="=")
+    click.echo("\n" + sep_jobs)
+    click.echo(
+        f"| {'Job ID':<{job_id_w}} | {'Resources':<{resources_w}} | {'Nodes':<{nodes_w}} | {'Status':<{status_w}} |"
+    )
+    click.echo(sep_jobs_header)
+    for job in jobs:
+        node_ids = _parse_node_ids(job.get("node_ids"))
+        nodes_str = ", ".join(node_ids[:2]) + ("..." if len(node_ids) > 2 else "")
+        resources = _format_resources(job.get("compute", "cpu"), job.get("gpus"))
+        click.echo(
+            f"| {_truncate(job['job_id'][:8], job_id_w):<{job_id_w}} | "
+            f"{_truncate(resources, resources_w):<{resources_w}} | "
+            f"{_truncate(nodes_str, nodes_w):<{nodes_w}} | "
+            f"{_truncate(job.get('status', ''), status_w):<{status_w}} |"
+        )
+    click.echo(sep_jobs)
+    failed_jobs = [j for j in jobs if j.get("status") == "failed" and j.get("error")]
+    if failed_jobs:
+        click.echo("\nFailed Jobs:")
+        for job in failed_jobs:
+            error_msg = job.get("error", "")
+            first_line = error_msg.split("\n")[0] if error_msg else ""
+            truncated_error = _truncate(first_line, 80) if first_line else "Unknown error"
+            click.echo(f"{job['job_id'][:8]}: {truncated_error}")
+
+
 @cli.command()
 @click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
 def status(control_plane_url: str):
     try:
-        data = requests.get(f"{control_plane_url}/status", timeout=5).json()
-        jobs = data.get("jobs", [])
-        current_hostname = socket.gethostname()
-        active_nodes = set(data.get("active_nodes", []))
-        nodes = data.get("nodes", [])
-        node_status = None
-        for node in nodes:
-            if node.get("node_id") == current_hostname:
-                node_status = node.get("status")
-                break
-        if node_status and node_status != "active":
-            joined_label = f"Yes ({node_status})"
-        else:
-            joined_label = "Yes" if current_hostname in active_nodes else "No"
-        compute = data.get("compute", {})
-        real_time_cpu = _get_real_time_cpu_usage()
-        real_time_gpus, _ = _get_real_time_gpu_stats()
-        node_usage: dict[str, dict[str, int]] = {}
-        for job in jobs:
-            if job.get("status") != "running":
-                continue
-            compute_type = job.get("compute", "cpu")
-            count = job.get("gpus", 1) if compute_type == "gpu" else 1
-            for node_id in _parse_node_ids(job.get("node_ids")):
-                node_usage.setdefault(node_id, {"cpu": 0, "gpu": 0})[compute_type] += count
-        compute_rows = []
-        all_node_ids_in_compute = set()
-        for compute_type in ["gpu", "cpu"]:
-            if compute_type not in compute:
-                continue
-            items = compute[compute_type]
-            if compute_type == "gpu":
-                node_map: dict[str, list] = {}
-                for gpu in items:
-                    if isinstance(gpu, list):
-                        node_id = gpu[0].get("node_id", "unknown") if gpu else "unknown"
-                        node_map.setdefault(node_id, []).extend(gpu)
-                    else:
-                        node_id = gpu.get("node_id", "unknown")
-                        node_map.setdefault(node_id, []).append(gpu)
-                for node_id, gpu_list in node_map.items():
-                    all_node_ids_in_compute.add(node_id)
-                    gpu, total = gpu_list[0] if gpu_list else {}, len(gpu_list)
-                    if gpu.get("utilization_percent") is not None:
-                        used = (
-                            int((gpu.get("utilization_percent") / 100.0) * total)
-                            if total > 0
-                            else 0
-                        )
-                    else:
-                        used = _calc_used(
-                            node_id, current_hostname, total, real_time_gpus, "gpu", node_usage
-                        )
-                    compute_rows.append(
-                        (
-                            node_id,
-                            gpu.get("name", "GPU"),
-                            f"GPU {_progress_bar(used, total)}",
-                            _format_memory(gpu.get("memory_gb"), gpu.get("memory_used_mib")),
-                            "N/A",
-                            _format_power(gpu.get("power_usage_w"), gpu.get("power_cap_w")),
-                            f"{used}/{total}",
-                        )
-                    )
-            else:
-                for cpu in items:
-                    node_id, cores = cpu.get("node_id", "unknown"), cpu.get("cores", 0)
-                    all_node_ids_in_compute.add(node_id)
-                    if cpu.get("utilization_percent") is not None:
-                        used = int((cpu.get("utilization_percent") / 100.0) * cores)
-                    else:
-                        used = _calc_used(
-                            node_id, current_hostname, cores, real_time_cpu, "cpu", node_usage
-                        )
-                    compute_rows.append(
-                        (
-                            node_id,
-                            cpu.get("name") or f"{cores} cores",
-                            f"CPU {_progress_bar(used, cores)}",
-                            _format_memory(cpu.get("memory_gb"), cpu.get("memory_used_mib")),
-                            _format_temp(cpu.get("temp_celsius")),
-                            _format_power(cpu.get("power_usage_w"), cpu.get("power_cap_w")),
-                            f"{used}/{cores}",
-                        )
-                    )
-
-        def _col_width(idx: int, default: int = 0) -> int:
-            return max(default, max((len(str(r[idx])) for r in compute_rows), default=0))
-
-        node_name_w = max(10, max(_col_width(0), _col_width(1)))
-        type_usage_w = max(15, max(_col_width(2), _col_width(3)))
-        status_w, temp_w, power_w = _col_width(6, 6), _col_width(4, 6), _col_width(5, 10)
-        last_col_w = max(temp_w + status_w + 1, power_w)
-        compute_widths = [node_name_w, type_usage_w, last_col_w]
-        sep = _sep(compute_widths)
-        sep_border = _sep(compute_widths, "+")
-        header_width = len(sep) - 2
-        click.echo(datetime.now().strftime("%a %b %d %H:%M:%S %Y"))
-        click.echo("+" + "-" * header_width + "+")
-        header_line1 = f"Wano {wano.__version__}"
-        header_line2 = f"Node Joined: {joined_label}"
-        remaining_width = header_width - len(header_line1) - 5
-        click.echo(f"| {header_line1:<{len(header_line1)}} | {header_line2:<{remaining_width}} |")
-        click.echo(sep_border)
-        click.echo(
-            f"| {'Node':<{node_name_w}} | {'Type Usage':<{type_usage_w}} | {'Temp':<{temp_w}} {'Status':<{status_w}} |"
-        )
-        power_header = "Power".ljust(last_col_w)
-        click.echo(
-            f"| {'Name':<{node_name_w}} | {'Memory-Usage':<{type_usage_w}} | {power_header} |"
-        )
-        click.echo(_sep(compute_widths, char="="))
-        for node_id, name, type_usage, memory, temp, power, status in compute_rows:
-            temp_status_str = f"{_truncate(str(temp), temp_w):<{temp_w}} {_truncate(str(status), status_w):<{status_w}}"
-            click.echo(
-                f"| {_truncate(str(node_id), node_name_w):<{node_name_w}} | "
-                f"{_truncate(str(type_usage), type_usage_w):<{type_usage_w}} | "
-                f"{temp_status_str:<{last_col_w}} |"
-            )
-            power_formatted = _truncate(str(power), last_col_w).ljust(last_col_w)
-            click.echo(
-                f"| {_truncate(str(name), node_name_w):<{node_name_w}} | "
-                f"{_truncate(str(memory), type_usage_w):<{type_usage_w}} | "
-                f"{power_formatted} |"
-            )
-        click.echo(sep_border)
-        compute_table_width = len(sep)
-        job_headers = ["Job ID", "Resources", "Nodes", "Status"]
-        if jobs:
-            max_job_id = max(len(j["job_id"][:8]) for j in jobs)
-            max_status = max(len(j.get("status", "")) for j in jobs)
-            max_nodes = max(
-                len(
-                    ", ".join((node_ids := _parse_node_ids(j.get("node_ids")))[:2])
-                    + ("..." if len(node_ids) > 2 else "")
-                )
-                for j in jobs
-            )
-        else:
-            max_job_id, max_status, max_nodes = 8, 0, 0
-        job_widths = [
-            max(max_job_id, len(job_headers[0])),
-            max(8, len(job_headers[1])),
-            max(max_nodes, len(job_headers[2])),
-            max(max_status, len(job_headers[3])),
-        ]
-        target_content_width = compute_table_width - 3 * len(job_headers) - 1
-        if sum(job_widths) < target_content_width:
-            extra = target_content_width - sum(job_widths)
-            job_widths[1] += extra // 3
-            job_widths[2] += extra - extra // 3
-        job_id_w, resources_w, nodes_w, status_w = job_widths
-        sep_jobs = _sep(job_widths, "+")
-        sep_jobs_header = _sep(job_widths, char="=")
-        click.echo("\n" + sep_jobs)
-        click.echo(
-            f"| {'Job ID':<{job_id_w}} | {'Resources':<{resources_w}} | {'Nodes':<{nodes_w}} | {'Status':<{status_w}} |"
-        )
-        click.echo(sep_jobs_header)
-        for job in jobs:
-            node_ids = _parse_node_ids(job.get("node_ids"))
-            nodes_str = ", ".join(node_ids[:2]) + ("..." if len(node_ids) > 2 else "")
-            compute_type, gpus = job.get("compute", "cpu"), job.get("gpus")
-            if compute_type == "gpu" and gpus:
-                resources = f"{gpus} GPUs"
-            elif compute_type == "gpu":
-                resources = "1 GPU"
-            else:
-                resources = "CPU"
-            click.echo(
-                f"| {_truncate(job['job_id'][:8], job_id_w):<{job_id_w}} | "
-                f"{_truncate(resources, resources_w):<{resources_w}} | "
-                f"{_truncate(nodes_str, nodes_w):<{nodes_w}} | "
-                f"{_truncate(job.get('status', ''), status_w):<{status_w}} |"
-            )
-        click.echo(sep_jobs)
-        failed_jobs = [j for j in jobs if j.get("status") == "failed" and j.get("error")]
-        if failed_jobs:
-            click.echo("\nFailed Jobs:")
-            for job in failed_jobs:
-                error_msg = job.get("error", "")
-                first_line = error_msg.split("\n")[0] if error_msg else ""
-                truncated_error = _truncate(first_line, 80) if first_line else "Unknown error"
-                click.echo(f"{job['job_id'][:8]}: {truncated_error}")
+        _render_status(control_plane_url)
     except requests.exceptions.RequestException as e:
         _handle_connection_error(e, control_plane_url)
+
+
+@cli.command()
+@click.option("--interval", "-n", default=2, show_default=True, help="Refresh interval in seconds")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def watch(interval: int, control_plane_url: str):
+    try:
+        while True:
+            click.clear()
+            try:
+                _render_status(control_plane_url)
+            except requests.exceptions.RequestException as e:
+                click.echo(f"Error: {e}", err=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
 
 
 @cli.command()
@@ -582,29 +599,22 @@ def job(job_id: str, control_plane_url: str):
         _handle_connection_error(e, control_plane_url)
         return
 
-    compute = data.get("compute")
-    gpus = data.get("gpus")
-    resources = f"{compute} ({gpus} GPUs)" if compute == "gpu" and gpus else compute
     node_ids = data.get("node_ids") or []
     nodes_str = ", ".join(node_ids) if isinstance(node_ids, list) else str(node_ids)
-
-    timeout = data.get("timeout_seconds")
-    deps = data.get("depends_on")
-    sel = data.get("node_selector")
-    ns = data.get("namespace")
     click.echo(
         "\n".join(
             [
                 f"Job ID: {data.get('job_id')}",
                 f"Status: {data.get('status')}",
-                f"Resources: {resources}",
+                f"Resources: {_format_resources(data.get('compute', 'cpu'), data.get('gpus'))}",
                 f"Priority: {data.get('priority', 0)}",
                 f"Attempts: {data.get('attempts', 0)} / {data.get('max_retries', 0)}",
                 f"Nodes: {nodes_str or '-'}",
-                f"Timeout: {f'{timeout}s' if timeout else 'none'}",
-                f"Depends on: {', '.join(deps) if deps else 'none'}",
-                f"Node selector: {', '.join(f'{k}={v}' for k, v in sel.items()) if sel else 'none'}",
-                f"Namespace: {ns or 'none'}",
+                f"Timeout: {f'{t}s' if (t := data.get('timeout_seconds')) else 'none'}",
+                f"TTL: {f'{t}s' if (t := data.get('ttl_seconds')) else 'none'}",
+                f"Depends on: {', '.join(d) if (d := data.get('depends_on')) else 'none'}",
+                f"Node selector: {', '.join(f'{k}={v}' for k, v in s.items()) if (s := data.get('node_selector')) else 'none'}",
+                f"Namespace: {data.get('namespace') or 'none'}",
                 f"Function: {data.get('function_name') or '-'}",
                 f"Created: {data.get('created_at') or '-'}",
                 f"Started: {data.get('started_at') or '-'}",
@@ -665,6 +675,41 @@ def cordon(node_id: str, control_plane_url: str):
 @click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
 def uncordon(node_id: str, control_plane_url: str):
     _node_action(node_id, "uncordon", control_plane_url)
+
+
+@cli.command()
+@click.argument("node_id")
+@click.option("--timeout", default=300, show_default=True, help="Max seconds to wait")
+@click.option("--force", is_flag=True, help="Cancel remaining jobs on timeout")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def drain(node_id: str, timeout: int, force: bool, control_plane_url: str):
+    _node_action(node_id, "cordon", control_plane_url)
+    deadline = time.time() + timeout
+    try:
+        while time.time() < deadline:
+            data = requests.get(f"{control_plane_url}/status", timeout=5).json()
+            running = [
+                j
+                for j in data.get("jobs", [])
+                if j.get("status") == "running" and node_id in _parse_node_ids(j.get("node_ids"))
+            ]
+            if not running:
+                click.echo(f"Drained {node_id} — no running jobs remain")
+                return
+            click.echo(f"Waiting... {len(running)} job(s) still running on {node_id}")
+            time.sleep(3)
+    except KeyboardInterrupt:
+        click.echo("\nDrain interrupted")
+        return
+    if force:
+        click.echo(f"Timeout reached — cancelling remaining jobs on {node_id}")
+        for j in running:
+            requests.delete(f"{control_plane_url}/jobs/{j['job_id']}", timeout=5)
+            click.echo(f"  Cancelled {j['job_id'][:8]}")
+        click.echo(f"Drained {node_id} (forced)")
+    else:
+        click.echo(f"Timeout reached — {len(running)} job(s) still running on {node_id}", err=True)
+        sys.exit(1)
 
 
 @cli.command()
