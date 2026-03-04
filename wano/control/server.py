@@ -286,6 +286,50 @@ async def cancel_job(job_id: str):
     return {"status": "cancelled", "job_id": job_id}
 
 
+@app.post("/jobs/{job_id}/retry")
+async def retry_job(job_id: str, background_tasks: BackgroundTasks):
+    if not db or not scheduler:
+        raise HTTPException(status_code=500, detail="Control plane not initialized")
+    old = db.get_job(job_id)
+    if not old:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if old.status not in (JobStatus.FAILED, JobStatus.CANCELLED):
+        raise HTTPException(status_code=400, detail=f"Job is {old.status.value}, cannot retry")
+    job = Job(
+        job_id=str(uuid.uuid4()),
+        compute=old.compute,
+        gpus=old.gpus,
+        status=JobStatus.PENDING,
+        created_at=datetime.now(UTC),
+        function_name=old.function_name,
+        function_code=old.function_code,
+        args=old.args,
+        kwargs=old.kwargs,
+        env_vars=old.env_vars,
+        priority=old.priority,
+        max_retries=old.max_retries,
+        timeout_seconds=old.timeout_seconds,
+        ttl_seconds=old.ttl_seconds,
+        node_selector=old.node_selector,
+        namespace=old.namespace,
+    )
+    db.create_job(job)
+    available_compute = db.get_available_compute()
+    node_usage = db.get_node_usage()
+    node_labels = db.get_node_labels()
+    quota = db.get_quota(job.namespace) if job.namespace else None
+    ns_usage = db.get_namespace_usage(job.namespace) if job.namespace else None
+    node_ids = scheduler.schedule_job(
+        job, available_compute, node_usage, node_labels, quota=quota, namespace_usage=ns_usage
+    )
+    if not node_ids:
+        return {"status": "pending", "job_id": job.job_id, "message": "No available compute"}
+    db.assign_job(job.job_id, node_ids)
+    ray_node_ids = db.get_ray_node_ids(node_ids)
+    background_tasks.add_task(_run_job, job, node_ids, ray_node_ids)
+    return {"status": "submitted", "job_id": job.job_id, "node_ids": node_ids}
+
+
 @app.get("/jobs/{job_id}/logs")
 async def get_job_logs(job_id: str):
     job = _check_db().get_job(job_id)

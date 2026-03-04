@@ -651,6 +651,67 @@ def cancel(job_id: str, control_plane_url: str):
         _handle_connection_error(e, control_plane_url)
 
 
+@cli.command()
+@click.argument("job_id")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def retry(job_id: str, control_plane_url: str):
+    try:
+        response = requests.post(f"{control_plane_url}/jobs/{job_id}/retry", timeout=5)
+        if response.status_code == 404:
+            click.echo(f"Error: Job {job_id} not found", err=True)
+            sys.exit(1)
+        if response.status_code == 400:
+            click.echo(f"Error: {response.json().get('detail', 'Cannot retry job')}", err=True)
+            sys.exit(1)
+        response.raise_for_status()
+        new_id = response.json()["job_id"]
+        click.echo(f"Retrying {job_id[:8]} as {new_id}")
+    except requests.exceptions.RequestException as e:
+        _handle_connection_error(e, control_plane_url)
+
+
+@cli.command()
+@click.argument("job_id")
+@click.option("--interval", "-n", default=2, show_default=True, help="Poll interval in seconds")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def wait(job_id: str, interval: int, control_plane_url: str):
+    try:
+        while True:
+            response = requests.get(f"{control_plane_url}/jobs/{job_id}", timeout=5)
+            if response.status_code == 404:
+                click.echo(f"Error: Job {job_id} not found", err=True)
+                sys.exit(1)
+            response.raise_for_status()
+            status = response.json().get("status")
+            if status in ("completed", "failed", "cancelled"):
+                click.echo(f"{job_id[:8]}: {status}")
+                sys.exit(0 if status == "completed" else 1)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        click.echo(f"\n{job_id[:8]}: still {status}")
+    except requests.exceptions.RequestException as e:
+        _handle_connection_error(e, control_plane_url)
+
+
+@cli.command()
+@click.argument("job_id")
+@click.option("--control-plane-url", default="http://localhost:8000", help="Control plane URL")
+def result(job_id: str, control_plane_url: str):
+    try:
+        response = requests.get(f"{control_plane_url}/jobs/{job_id}", timeout=5)
+        if response.status_code == 404:
+            click.echo(f"Error: Job {job_id} not found", err=True)
+            sys.exit(1)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("status") != "completed":
+            click.echo(f"Error: Job is {data.get('status')}, no result", err=True)
+            sys.exit(1)
+        click.echo(data.get("result") or "null")
+    except requests.exceptions.RequestException as e:
+        _handle_connection_error(e, control_plane_url)
+
+
 def _node_action(node_id: str, action: str, control_plane_url: str):
     try:
         response = requests.post(f"{control_plane_url}/nodes/{node_id}/{action}", timeout=5)
