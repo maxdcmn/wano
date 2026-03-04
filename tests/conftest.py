@@ -8,6 +8,7 @@ import pytest
 import ray
 
 from wano.control.db import Database
+from wano.models.compute import CPUSpec, NodeCapabilities
 from wano.models.job import Job, JobStatus
 
 
@@ -24,6 +25,13 @@ def make_job(
         created_at=datetime.now(UTC),
         **kwargs,
     )
+
+
+def make_caps(node_id="node1", cores=8, memory_gb=16, gpus=None, **kwargs):
+    compute: dict = {"cpu": CPUSpec(cores=cores, memory_gb=memory_gb)}
+    if gpus:
+        compute["gpu"] = gpus
+    return NodeCapabilities(node_id=node_id, compute=compute, **kwargs)
 
 
 @pytest.fixture

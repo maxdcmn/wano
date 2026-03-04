@@ -6,6 +6,12 @@ from wano.models.job import Job
 from wano.models.quota import ResourceQuota
 
 
+def _get_node_id(entry: Any) -> str | None:
+    if isinstance(entry, list):
+        return entry[0].get("node_id") if entry else None
+    return entry.get("node_id") if isinstance(entry, dict) else None
+
+
 class Scheduler:
     def schedule_job(
         self,
@@ -48,21 +54,11 @@ class Scheduler:
             labels = node_labels.get(node_id, {})
             return all(labels.get(k) == v for k, v in node_selector.items())
 
-        filtered: dict[str, list[Any]] = {}
-        for compute_type, entries in available_compute.items():
-            kept = []
-            for entry in entries:
-                if isinstance(entry, list):
-                    node_id = entry[0].get("node_id") if entry else None
-                elif isinstance(entry, dict):
-                    node_id = entry.get("node_id")
-                else:
-                    node_id = None
-                if node_id and _matches(node_id):
-                    kept.append(entry)
-            if kept:
-                filtered[compute_type] = kept
-        return filtered
+        return {
+            compute_type: kept
+            for compute_type, entries in available_compute.items()
+            if (kept := [e for e in entries if (nid := _get_node_id(e)) and _matches(nid)])
+        }
 
     def _schedule_cpu_job(
         self, available_compute: dict[str, list[Any]], node_usage: dict[str, dict[str, int]]
@@ -91,12 +87,8 @@ class Scheduler:
         node_gpus: dict[str, int] = {}
         node_order: list[str] = []
         for gpu_entry in available_compute["gpu"]:
-            if isinstance(gpu_entry, list):
-                node_id = gpu_entry[0].get("node_id") if gpu_entry else None
-                count = len(gpu_entry)
-            else:
-                node_id = gpu_entry.get("node_id")
-                count = 1
+            node_id = _get_node_id(gpu_entry)
+            count = len(gpu_entry) if isinstance(gpu_entry, list) else 1
             if node_id:
                 if node_id not in node_gpus:
                     node_order.append(node_id)

@@ -32,6 +32,7 @@ class Job:
     kwargs: str | None = None
     env_vars: str | None = None
     timeout_seconds: int | None = None
+    ttl_seconds: int | None = None
     depends_on: list[str] | None = None
     node_selector: dict[str, str] | None = None
     namespace: str | None = None
@@ -53,6 +54,7 @@ class Job:
             "error": self.error,
             "result": self.result,
             "timeout_seconds": self.timeout_seconds,
+            "ttl_seconds": self.ttl_seconds,
             "depends_on": self.depends_on,
             "node_selector": self.node_selector,
             "namespace": self.namespace,

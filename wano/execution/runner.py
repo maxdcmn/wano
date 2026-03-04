@@ -26,6 +26,7 @@ def submit_job(
     priority: int = 0,
     max_retries: int = 0,
     timeout_seconds: int | None = None,
+    ttl_seconds: int | None = None,
     depends_on: list[str] | None = None,
     node_selector: dict[str, str] | None = None,
     namespace: str | None = None,
@@ -41,6 +42,7 @@ def submit_job(
         "priority": priority,
         "max_retries": max_retries,
         "timeout_seconds": timeout_seconds,
+        "ttl_seconds": ttl_seconds,
         "depends_on": depends_on,
         "node_selector": node_selector,
         "namespace": namespace,
@@ -85,9 +87,6 @@ def _run_container(
         script.write_text(_build_script(source_code, function_name))
         result_file = Path(tmpdir) / "result.json"
         result_file.touch()
-        device_requests = None
-        if compute == "gpu":
-            device_requests = [docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])]
         try:
             container = client.containers.run(
                 CONTAINER_IMAGE,
@@ -97,7 +96,11 @@ def _run_container(
                     str(result_file): {"bind": "/tmp/result.json", "mode": "rw"},
                 },
                 network_disabled=True,
-                device_requests=device_requests,
+                device_requests=(
+                    [docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])]
+                    if compute == "gpu"
+                    else None
+                ),
                 environment={
                     "ARGS": json.dumps(args),
                     "KWARGS": json.dumps(kwargs),
@@ -187,9 +190,11 @@ def execute_on_ray(
         assignments = list(node_ids[:num_gpus]) if node_ids else []
         if assignments and len(assignments) < num_gpus:
             assignments.extend([assignments[0]] * (num_gpus - len(assignments)))
+        ray_ids = ray_node_ids or []
         resolved = [
-            _resolve(wid, rid) for wid, rid in zip(assignments, ray_node_ids or [], strict=False)
-        ] + [_resolve_ray_node_id(wid) for wid in assignments[len(ray_node_ids or []) :]]
+            _resolve(wid, ray_ids[i] if i < len(ray_ids) else None)
+            for i, wid in enumerate(assignments)
+        ]
         tasks = [
             _make_task(resolved[i] if i < len(resolved) else None, num_gpus=1)
             for i in range(num_gpus)

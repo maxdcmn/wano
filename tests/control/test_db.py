@@ -1,17 +1,11 @@
-from conftest import make_job
+from conftest import make_caps, make_job
 
-from wano.models.compute import CPUSpec, GPUSpec, NodeCapabilities
+from wano.models.compute import GPUSpec
 from wano.models.job import JobStatus
 
 
 def test_register_node_and_get_compute(db):
-    capabilities = NodeCapabilities(
-        node_id="node1",
-        compute={
-            "cpu": CPUSpec(cores=8, memory_gb=16),
-            "gpu": [GPUSpec(name="GPU1", memory_gb=24)],
-        },
-    )
+    capabilities = make_caps(gpus=[GPUSpec(name="GPU1", memory_gb=24)])
     db.register_node("node1", capabilities)
 
     assert "node1" in db.get_active_nodes()
@@ -55,20 +49,14 @@ def test_get_job_returns_result(db):
 
 
 def test_heartbeat_keeps_node_active(db):
-    capabilities = NodeCapabilities(
-        node_id="node1", compute={"cpu": CPUSpec(cores=8, memory_gb=16)}
-    )
-    db.register_node("node1", capabilities)
+    db.register_node("node1", make_caps())
     assert "node1" in db.get_active_nodes(heartbeat_timeout_seconds=1)
     db.update_heartbeat("node1")
     assert "node1" in db.get_active_nodes(heartbeat_timeout_seconds=1)
 
 
 def test_heartbeat_timeout(db):
-    capabilities = NodeCapabilities(
-        node_id="node1", compute={"cpu": CPUSpec(cores=8, memory_gb=16)}
-    )
-    db.register_node("node1", capabilities)
+    db.register_node("node1", make_caps())
     assert "node1" not in db.get_active_nodes(heartbeat_timeout_seconds=0)
 
 
@@ -261,23 +249,16 @@ def test_cascade_does_not_affect_completed(db):
 
 
 def test_cordoned_node_remains_cordoned(db):
-    capabilities = NodeCapabilities(
-        node_id="node1", compute={"cpu": CPUSpec(cores=8, memory_gb=16)}
-    )
-    db.register_node("node1", capabilities)
+    caps = make_caps()
+    db.register_node("node1", caps)
     assert db.set_node_status("node1", "cordoned")
-    db.register_node("node1", capabilities)
+    db.register_node("node1", caps)
     nodes = {n["node_id"]: n["status"] for n in db.get_nodes()}
     assert nodes["node1"] == "cordoned"
 
 
 def test_node_labels_persisted(db):
-    capabilities = NodeCapabilities(
-        node_id="node1",
-        compute={"cpu": CPUSpec(cores=4, memory_gb=8)},
-        labels={"rack": "A", "env": "prod"},
-    )
-    db.register_node("node1", capabilities)
+    db.register_node("node1", make_caps(cores=4, memory_gb=8, labels={"rack": "A", "env": "prod"}))
     labels = db.get_node_labels()
     assert labels["node1"] == {"rack": "A", "env": "prod"}
 
@@ -330,3 +311,39 @@ def test_delete_quota(db):
     assert db.delete_quota("team-b")
     assert db.get_quota("team-b") is None
     assert not db.delete_quota("nonexistent")
+
+
+def test_job_ttl_persisted(db):
+    db.create_job(make_job("job-ttl", ttl_seconds=3600))
+    job = db.get_job("job-ttl")
+    assert job.ttl_seconds == 3600
+
+
+def test_job_ttl_none_by_default(db):
+    db.create_job(make_job("job-no-ttl"))
+    job = db.get_job("job-no-ttl")
+    assert job.ttl_seconds is None
+
+
+def test_cleanup_expired_jobs(db):
+    db.create_job(make_job("job-expired", ttl_seconds=0))
+    db.assign_job("job-expired", ["node1"])
+    db.complete_job("job-expired")
+    deleted = db.cleanup_expired_jobs()
+    assert deleted >= 1
+    assert db.get_job("job-expired") is None
+
+
+def test_cleanup_spares_unexpired(db):
+    db.create_job(make_job("job-fresh", ttl_seconds=9999))
+    db.assign_job("job-fresh", ["node1"])
+    db.complete_job("job-fresh")
+    db.cleanup_expired_jobs()
+    assert db.get_job("job-fresh") is not None
+
+
+def test_cleanup_spares_running(db):
+    db.create_job(make_job("job-running", ttl_seconds=0))
+    db.assign_job("job-running", ["node1"])
+    db.cleanup_expired_jobs()
+    assert db.get_job("job-running") is not None

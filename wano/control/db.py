@@ -8,7 +8,21 @@ from wano.models.compute import CPUSpec, NodeCapabilities
 from wano.models.job import Job, JobStatus
 from wano.models.quota import ResourceQuota
 
-_JOB_COLS = "job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace"
+_JOB_COLS = "job_id, compute, gpus, status, node_ids, priority, max_retries, attempts, created_at, started_at, completed_at, function_name, function_code, error, result, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace, ttl_seconds"
+
+
+def _json_list(raw: str | None) -> list | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
+def _parse_dt(val: str | None) -> datetime | None:
+    return datetime.fromisoformat(val) if val else None
 
 
 class Database:
@@ -38,6 +52,7 @@ class Database:
         ("nodes", "labels", "TEXT"),
         ("jobs", "node_selector", "TEXT"),
         ("jobs", "namespace", "TEXT"),
+        ("jobs", "ttl_seconds", "INTEGER"),
     ]
 
     def _init_schema(self):
@@ -104,17 +119,15 @@ class Database:
         )
 
     def get_active_nodes(self, heartbeat_timeout_seconds: int = 30) -> list[str]:
-        cutoff = datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)
-        cutoff_str = cutoff.isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)).isoformat()
         with self._conn as conn:
-            active = [
+            return [
                 row[0]
                 for row in conn.execute(
                     "SELECT node_id FROM nodes WHERE status = 'active' AND last_seen > ?",
-                    (cutoff_str,),
+                    (cutoff,),
                 ).fetchall()
             ]
-        return active
 
     def set_node_status(self, node_id: str, status: str) -> bool:
         with self._conn as conn:
@@ -155,13 +168,12 @@ class Database:
         return {row[0]: json.loads(row[1]) for row in rows}
 
     def get_available_compute(self, heartbeat_timeout_seconds: int = 30) -> dict[str, list]:
-        cutoff = datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)
-        cutoff_str = cutoff.isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)).isoformat()
         result: dict[str, list] = {}
         with self._conn as conn:
             for node_id, compute_type, spec_json in conn.execute(
                 "SELECT node_id, type, spec_json FROM compute WHERE node_id IN (SELECT node_id FROM nodes WHERE status = 'active' AND last_seen > ?)",
-                (cutoff_str,),
+                (cutoff,),
             ).fetchall():
                 spec = json.loads(spec_json)
                 if isinstance(spec, dict):
@@ -180,13 +192,7 @@ class Database:
                 (JobStatus.RUNNING.value,),
             ).fetchall()
         for node_ids_raw, compute in rows:
-            if not node_ids_raw:
-                continue
-            try:
-                node_ids = json.loads(node_ids_raw)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(node_ids, list):
+            if not (node_ids := _json_list(node_ids_raw)):
                 continue
             key = "gpu" if compute == "gpu" else "cpu"
             for node_id in node_ids:
@@ -197,7 +203,7 @@ class Database:
     def create_job(self, job: Job):
         with self._conn as conn:
             conn.execute(
-                "INSERT INTO jobs (job_id, compute, gpus, status, priority, max_retries, attempts, created_at, function_name, function_code, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs (job_id, compute, gpus, status, priority, max_retries, attempts, created_at, function_name, function_code, args, kwargs, env_vars, timeout_seconds, depends_on, node_selector, namespace, ttl_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job.job_id,
                     job.compute,
@@ -216,6 +222,7 @@ class Database:
                     json.dumps(job.depends_on) if job.depends_on else None,
                     json.dumps(job.node_selector) if job.node_selector else None,
                     job.namespace,
+                    job.ttl_seconds,
                 ),
             )
             conn.commit()
@@ -269,9 +276,9 @@ class Database:
             priority=row[5] or 0,
             max_retries=row[6] or 0,
             attempts=row[7] or 0,
-            created_at=datetime.fromisoformat(row[8]) if row[8] else None,
-            started_at=datetime.fromisoformat(row[9]) if row[9] else None,
-            completed_at=datetime.fromisoformat(row[10]) if row[10] else None,
+            created_at=_parse_dt(row[8]),
+            started_at=_parse_dt(row[9]),
+            completed_at=_parse_dt(row[10]),
             function_name=row[11],
             function_code=row[12],
             error=row[13],
@@ -283,6 +290,7 @@ class Database:
             depends_on=json.loads(row[19]) if row[19] else None,
             node_selector=json.loads(row[20]) if row[20] else None,
             namespace=row[21],
+            ttl_seconds=row[22] if len(row) > 22 else None,
         )
 
     def get_job(self, job_id: str) -> Job | None:
@@ -344,11 +352,7 @@ class Database:
             ).fetchall()
         dependents = []
         for row in rows:
-            if not row[1]:
-                continue
-            try:
-                dep_ids = json.loads(row[1])
-            except json.JSONDecodeError:
+            if not (dep_ids := _json_list(row[1])):
                 continue
             if failed_job_id in dep_ids:
                 dependents.append(row[0])
@@ -438,3 +442,12 @@ class Database:
             ).fetchall():
                 usage["gpu" if compute == "gpu" else "cpu"] = count
         return usage
+
+    def cleanup_expired_jobs(self) -> int:
+        with self._conn as conn:
+            cursor = conn.execute(
+                "DELETE FROM jobs WHERE ttl_seconds IS NOT NULL AND status IN (?, ?, ?) AND completed_at IS NOT NULL AND datetime(completed_at, '+' || ttl_seconds || ' seconds') <= datetime('now')",
+                (JobStatus.COMPLETED.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value),
+            )
+            conn.commit()
+        return cursor.rowcount

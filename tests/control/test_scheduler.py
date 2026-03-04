@@ -2,56 +2,51 @@ from wano.control.scheduler import Scheduler
 from wano.models.job import Job, JobStatus
 from wano.models.quota import ResourceQuota
 
+_scheduler = Scheduler()
+
 
 def test_cpu_job_with_available_compute():
-    scheduler = Scheduler()
     job = Job(job_id="job1", compute="cpu", status=JobStatus.PENDING)
     available = {"cpu": [{"node_id": "node1", "cores": 4}]}
 
-    assert scheduler.schedule_job(job, available) == ["node1"]
+    assert _scheduler.schedule_job(job, available) == ["node1"]
 
 
 def test_cpu_job_without_available_compute():
-    scheduler = Scheduler()
     job = Job(job_id="job1", compute="cpu", status=JobStatus.PENDING)
 
-    assert scheduler.schedule_job(job, {}) is None
+    assert _scheduler.schedule_job(job, {}) is None
 
 
 def test_gpu_job_single_node():
-    scheduler = Scheduler()
     job = Job(job_id="job1", compute="gpu", gpus=1, status=JobStatus.PENDING)
     available = {"gpu": [[{"node_id": "node1"}]]}
 
-    assert scheduler.schedule_job(job, available) == ["node1"]
+    assert _scheduler.schedule_job(job, available) == ["node1"]
 
 
 def test_gpu_job_multi_node():
-    scheduler = Scheduler()
     job = Job(job_id="job2", compute="gpu", gpus=3, status=JobStatus.PENDING)
     available = {"gpu": [[{"node_id": "node1"}], [{"node_id": "node1"}], [{"node_id": "node2"}]]}
 
-    assert scheduler.schedule_job(job, available) == ["node1", "node1", "node2"]
+    assert _scheduler.schedule_job(job, available) == ["node1", "node1", "node2"]
 
 
 def test_gpu_job_insufficient_gpus():
-    scheduler = Scheduler()
     job = Job(job_id="job3", compute="gpu", gpus=5, status=JobStatus.PENDING)
     available = {"gpu": [[{"node_id": "node1"}], [{"node_id": "node2"}]]}
 
-    assert scheduler.schedule_job(job, available) is None
+    assert _scheduler.schedule_job(job, available) is None
 
 
 def test_gpu_job_defaults_to_one():
-    scheduler = Scheduler()
     job = Job(job_id="job4", compute="gpu", gpus=None, status=JobStatus.PENDING)
     available = {"gpu": [[{"node_id": "node1"}]]}
 
-    assert scheduler.schedule_job(job, available) == ["node1"]
+    assert _scheduler.schedule_job(job, available) == ["node1"]
 
 
 def test_cpu_job_respects_usage():
-    scheduler = Scheduler()
     job = Job(job_id="job5", compute="cpu", status=JobStatus.PENDING)
     available = {
         "cpu": [
@@ -61,36 +56,32 @@ def test_cpu_job_respects_usage():
     }
     usage = {"node1": {"cpu": 2, "gpu": 0}, "node2": {"cpu": 0, "gpu": 0}}
 
-    assert scheduler.schedule_job(job, available, usage) == ["node2"]
+    assert _scheduler.schedule_job(job, available, usage) == ["node2"]
 
 
 def test_gpu_job_respects_usage():
-    scheduler = Scheduler()
     job = Job(job_id="job6", compute="gpu", gpus=1, status=JobStatus.PENDING)
     available = {"gpu": [[{"node_id": "node1"}, {"node_id": "node1"}], [{"node_id": "node2"}]]}
     usage = {"node1": {"cpu": 0, "gpu": 2}, "node2": {"cpu": 0, "gpu": 0}}
 
-    assert scheduler.schedule_job(job, available, usage) == ["node2"]
+    assert _scheduler.schedule_job(job, available, usage) == ["node2"]
 
 
 def test_cpu_job_with_matching_label():
-    scheduler = Scheduler()
     job = Job(job_id="job7", compute="cpu", status=JobStatus.PENDING, node_selector={"rack": "A"})
     available = {"cpu": [{"node_id": "node1", "cores": 4}]}
     labels = {"node1": {"rack": "A"}}
-    assert scheduler.schedule_job(job, available, node_labels=labels) == ["node1"]
+    assert _scheduler.schedule_job(job, available, node_labels=labels) == ["node1"]
 
 
 def test_cpu_job_with_non_matching_label():
-    scheduler = Scheduler()
     job = Job(job_id="job8", compute="cpu", status=JobStatus.PENDING, node_selector={"rack": "B"})
     available = {"cpu": [{"node_id": "node1", "cores": 4}]}
     labels = {"node1": {"rack": "A"}}
-    assert scheduler.schedule_job(job, available, node_labels=labels) is None
+    assert _scheduler.schedule_job(job, available, node_labels=labels) is None
 
 
 def test_gpu_job_with_label_filter():
-    scheduler = Scheduler()
     job = Job(
         job_id="job9",
         compute="gpu",
@@ -100,37 +91,33 @@ def test_gpu_job_with_label_filter():
     )
     available = {"gpu": [[{"node_id": "node1"}], [{"node_id": "node2"}]]}
     labels = {"node2": {"env": "prod"}}
-    assert scheduler.schedule_job(job, available, node_labels=labels) == ["node2"]
+    assert _scheduler.schedule_job(job, available, node_labels=labels) == ["node2"]
 
 
 def test_job_without_selector_ignores_labels():
-    scheduler = Scheduler()
     job = Job(job_id="job10", compute="cpu", status=JobStatus.PENDING)
     available = {"cpu": [{"node_id": "node1", "cores": 4}]}
     labels = {"node1": {"rack": "A"}}
-    assert scheduler.schedule_job(job, available, node_labels=labels) == ["node1"]
+    assert _scheduler.schedule_job(job, available, node_labels=labels) == ["node1"]
 
 
 def test_cpu_job_within_quota():
-    scheduler = Scheduler()
     job = Job(job_id="job11", compute="cpu", status=JobStatus.PENDING, namespace="team-a")
     available = {"cpu": [{"node_id": "node1", "cores": 4}]}
     quota = ResourceQuota(namespace="team-a", max_cpu_jobs=2)
     usage = {"cpu": 1, "gpu": 0}
-    assert scheduler.schedule_job(job, available, quota=quota, namespace_usage=usage) == ["node1"]
+    assert _scheduler.schedule_job(job, available, quota=quota, namespace_usage=usage) == ["node1"]
 
 
 def test_cpu_job_exceeds_quota():
-    scheduler = Scheduler()
     job = Job(job_id="job12", compute="cpu", status=JobStatus.PENDING, namespace="team-a")
     available = {"cpu": [{"node_id": "node1", "cores": 4}]}
     quota = ResourceQuota(namespace="team-a", max_cpu_jobs=2)
     usage = {"cpu": 2, "gpu": 0}
-    assert scheduler.schedule_job(job, available, quota=quota, namespace_usage=usage) is None
+    assert _scheduler.schedule_job(job, available, quota=quota, namespace_usage=usage) is None
 
 
 def test_job_without_namespace_ignores_quota():
-    scheduler = Scheduler()
     job = Job(job_id="job13", compute="cpu", status=JobStatus.PENDING)
     available = {"cpu": [{"node_id": "node1", "cores": 4}]}
-    assert scheduler.schedule_job(job, available) == ["node1"]
+    assert _scheduler.schedule_job(job, available) == ["node1"]

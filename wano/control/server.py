@@ -34,6 +34,7 @@ class SubmitRequest(BaseModel):
     priority: int = 0
     max_retries: int = 0
     timeout_seconds: int | None = None
+    ttl_seconds: int | None = None
     function_name: str | None = None
     function_code: str = ""
     args: str | None = None
@@ -166,6 +167,7 @@ async def submit_job(body: SubmitRequest, background_tasks: BackgroundTasks):
         priority=body.priority,
         max_retries=body.max_retries,
         timeout_seconds=body.timeout_seconds,
+        ttl_seconds=body.ttl_seconds,
         depends_on=body.depends_on,
         node_selector=body.node_selector,
         namespace=body.namespace,
@@ -271,14 +273,14 @@ async def get_job(job_id: str):
 
 @app.delete("/jobs/{job_id}")
 async def cancel_job(job_id: str):
-    job = _check_db().get_job(job_id)
+    db_instance = _check_db()
+    job = db_instance.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job.status not in (JobStatus.RUNNING, JobStatus.PENDING):
         raise HTTPException(status_code=400, detail=f"Job is {job.status.value}, cannot cancel")
     if job.status == JobStatus.RUNNING:
         _cancel_tasks(job_id)
-    db_instance = _check_db()
     db_instance.cancel_job(job_id)
     db_instance.cascade_failure(job_id)
     return {"status": "cancelled", "job_id": job_id}
@@ -346,6 +348,11 @@ def _check_timed_out_jobs():
             db.cascade_failure(job.job_id)
 
 
+def _cleanup_expired_jobs():
+    if db:
+        db.cleanup_expired_jobs()
+
+
 def _start_pending_job_retry():
     def retry_loop():
         while True:
@@ -354,6 +361,8 @@ def _start_pending_job_retry():
                 _retry_pending_jobs()
             with contextlib.suppress(Exception):
                 _check_timed_out_jobs()
+            with contextlib.suppress(Exception):
+                _cleanup_expired_jobs()
 
     threading.Thread(target=retry_loop, daemon=True).start()
 
